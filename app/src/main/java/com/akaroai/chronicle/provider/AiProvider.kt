@@ -30,7 +30,7 @@ class ChronicleDemoProvider : AiProvider {
         return if (last.isBlank()) {
             "Chronicle is ready."
         } else {
-            "Demo mode received: "$last"\n\nConnect an AI provider in a later build to continue the scene."
+            "Demo mode received: \"$last\"\n\nConnect an AI provider in a later build to continue."
         }
     }
 }
