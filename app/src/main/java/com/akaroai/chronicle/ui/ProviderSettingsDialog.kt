@@ -16,6 +16,7 @@ fun ProviderSettingsDialog(
     onSave: (ProviderSettings) -> Unit
 ) {
     var enabled by remember(current) { mutableStateOf(current.enabled) }
+    var autoReview by remember(current) { mutableStateOf(current.autoReviewEnabled) }
     var baseUrl by remember(current) { mutableStateOf(current.baseUrl) }
     var apiKey by remember(current) { mutableStateOf(current.apiKey) }
     var model by remember(current) { mutableStateOf(current.model) }
@@ -31,9 +32,24 @@ fun ProviderSettingsDialog(
                     Text(if (enabled) "Real AI enabled" else "Demo mode")
                 }
 
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(
+                        checked = autoReview,
+                        onCheckedChange = { autoReview = it },
+                        enabled = enabled
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text("Automatic Review suggestions")
+                        Text(
+                            "Uses one extra AI request after each reply.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
                 Text(
-                    "OpenAI-compatible /chat/completions endpoint. " +
-                        "Campaign memory stays isolated inside Chronicle.",
+                    "Automatic suggestions never become canon until you approve them in Review.",
                     style = MaterialTheme.typography.bodySmall
                 )
 
@@ -63,7 +79,15 @@ fun ProviderSettingsDialog(
         },
         confirmButton = {
             Button(onClick = {
-                onSave(ProviderSettings(baseUrl, apiKey, model, enabled))
+                onSave(
+                    ProviderSettings(
+                        baseUrl = baseUrl,
+                        apiKey = apiKey,
+                        model = model,
+                        enabled = enabled,
+                        autoReviewEnabled = autoReview
+                    )
+                )
             }) { Text("Save") }
         },
         dismissButton = {

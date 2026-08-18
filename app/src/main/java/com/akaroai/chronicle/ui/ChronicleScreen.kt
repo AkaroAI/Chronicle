@@ -17,36 +17,678 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.akaroai.chronicle.model.*
 
-enum class ChronicleTab(val label:String){CHAT("Chat"),MEMORY("Memory"),CHARACTERS("Characters")}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable fun ChronicleScreen(vm:ChronicleViewModel){
- val campaigns by vm.campaigns.collectAsState(); val archived by vm.archivedCampaigns.collectAsState(); val selected by vm.selectedCampaign.collectAsState(); val ps by vm.providerSettings.collectAsState(); val error by vm.lastError.collectAsState()
- var tab by remember{mutableStateOf(ChronicleTab.CHAT)}; var create by remember{mutableStateOf(false)}; var provider by remember{mutableStateOf(false)}; var editCampaign by remember{mutableStateOf(false)}; var archiveDlg by remember{mutableStateOf(false)}; var deleteDlg by remember{mutableStateOf(false)}; var menu by remember{mutableStateOf(false)}
- val snack=remember{SnackbarHostState()}; LaunchedEffect(error){error?.let{snack.showSnackbar(it);vm.clearError()}}
- Scaffold(snackbarHost={SnackbarHost(snack)},topBar={TopAppBar(title={Column{Text("Chronicle",fontWeight=FontWeight.Bold);Text(selected?.name?:"No campaign selected",style=MaterialTheme.typography.labelMedium)}},actions={
-  IconButton(onClick={provider=true}){Icon(Icons.Default.Settings,"AI settings")}
-  Box{IconButton(onClick={menu=true}){Icon(Icons.Default.MoreVert,"Campaign options")};DropdownMenu(expanded=menu,onDismissRequest={menu=false}){
-   if(selected!=null){DropdownMenuItem(text={Text("Edit campaign")},onClick={menu=false;editCampaign=true},leadingIcon={Icon(Icons.Default.Edit,null)});DropdownMenuItem(text={Text("Archive / close")},onClick={menu=false;selected?.let(vm::archiveCampaign)},leadingIcon={Icon(Icons.Default.Archive,null)});DropdownMenuItem(text={Text("Delete campaign")},onClick={menu=false;deleteDlg=true},leadingIcon={Icon(Icons.Default.Delete,null)})}
-   if(archived.isNotEmpty())DropdownMenuItem(text={Text("Archived campaigns")},onClick={menu=false;archiveDlg=true},leadingIcon={Icon(Icons.Default.Inventory2,null)})
-  }}
-  IconButton(onClick={create=true}){Icon(Icons.Default.Add,"New campaign")}
- })},bottomBar={NavigationBar{ChronicleTab.entries.forEach{item->NavigationBarItem(selected=tab==item,onClick={tab=item},icon={Icon(when(item){ChronicleTab.CHAT->Icons.Default.Chat;ChronicleTab.MEMORY->Icons.Default.Book;ChronicleTab.CHARACTERS->Icons.Default.Groups},item.label)},label={Text(item.label)})}}}){pad->
-  Column(Modifier.padding(pad).fillMaxSize()){LazyRow(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){items(campaigns,key={it.id}){c->FilterChip(selected=c.id==selected?.id,onClick={vm.selectCampaign(c.id)},label={Text(c.name)})};item{AssistChip(onClick={create=true},label={Text("New campaign")},leadingIcon={Icon(Icons.Default.Add,null)})}};if(selected==null)Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Button(onClick={create=true}){Text("Create campaign")}}else when(tab){ChronicleTab.CHAT->ChatTab(vm,ps.enabled);ChronicleTab.MEMORY->MemoryTab(vm);ChronicleTab.CHARACTERS->CharactersTab(vm)}}
- }
- if(create)CreateCampaignDialog({create=false}){n,d->vm.createCampaign(n,d);create=false}
- if(provider)ProviderSettingsDialog(ps,{provider=false}){vm.saveProviderSettings(it);provider=false}
- selected?.let{c->if(editCampaign)CampaignEditorDialog(c,{editCampaign=false}){vm.updateCampaign(it);editCampaign=false};if(deleteDlg)AlertDialog(onDismissRequest={deleteDlg=false},title={Text("Delete ${c.name}?")},text={Text("This permanently deletes its chat, memories, characters, and future review notifications.")},confirmButton={Button(onClick={vm.deleteCampaign(c);deleteDlg=false},colors=ButtonDefaults.buttonColors(containerColor=MaterialTheme.colorScheme.error)){Text("Delete permanently")}},dismissButton={TextButton(onClick={deleteDlg=false}){Text("Cancel")}})}
- if(archiveDlg)ArchivedCampaignsDialog(archived,{archiveDlg=false},vm::restoreCampaign,vm::deleteCampaign)
+enum class ChronicleTab(val label: String) {
+    CHAT("Chat"),
+    MEMORY("Memory"),
+    CHARACTERS("Characters"),
+    REVIEW("Review")
 }
 
-@Composable private fun ChatTab(vm:ChronicleViewModel,real:Boolean){val msgs by vm.messages.collectAsState();val gen by vm.isGenerating.collectAsState();var input by remember{mutableStateOf("")};Column(Modifier.fillMaxSize()){Text(if(real)"AI enabled • campaign-isolated context" else "Demo mode • tap ⚙ to connect",Modifier.padding(12.dp),style=MaterialTheme.typography.labelSmall);LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){items(msgs,key={it.id}){m->MessageBubble(m)};if(gen)item{LinearProgressIndicator(Modifier.fillMaxWidth())}};Row(Modifier.fillMaxWidth().padding(10.dp),verticalAlignment=Alignment.Bottom){OutlinedTextField(input,{input=it},Modifier.weight(1f),placeholder={Text("Continue the story…")},maxLines=5);Spacer(Modifier.width(8.dp));FilledIconButton(onClick={val t=input;input="";vm.sendMessage(t)},enabled=input.isNotBlank()&&!gen){Icon(Icons.Default.Send,"Send")}}}}
-@Composable private fun MessageBubble(m:MessageEntity){val u=m.role=="user";Row(Modifier.fillMaxWidth(),horizontalArrangement=if(u)Arrangement.End else Arrangement.Start){Column(Modifier.fillMaxWidth(.88f).background(if(u)MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,RoundedCornerShape(16.dp)).padding(12.dp)){Text(if(u)"You" else "Chronicle",fontWeight=FontWeight.Bold);Text(m.content)}}}
-@Composable private fun MemoryTab(vm:ChronicleViewModel){val mem by vm.memories.collectAsState();var add by remember{mutableStateOf(false)};Column(Modifier.fillMaxSize()){Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween){Text("Campaign Memory",style=MaterialTheme.typography.titleMedium);Button(onClick={add=true}){Text("Add")}};LazyColumn(contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){items(mem,key={it.id}){m->ElevatedCard(Modifier.fillMaxWidth()){Column(Modifier.padding(12.dp)){Text("${m.category} • ${m.title}",fontWeight=FontWeight.Bold);Text(m.content);TextButton(onClick={vm.deleteMemory(m)}){Text("Remove")}}}}}};if(add)AddMemoryDialog({add=false}){t,c,cat->vm.addMemory(t,c,cat);add=false}}
-@Composable private fun CharactersTab(vm:ChronicleViewModel){val chars by vm.characters.collectAsState();val campaign by vm.selectedCampaign.collectAsState();var editing by remember{mutableStateOf<CharacterEntity?>(null)};var adding by remember{mutableStateOf(false)};Column(Modifier.fillMaxSize()){Row(Modifier.fillMaxWidth().padding(12.dp),horizontalArrangement=Arrangement.SpaceBetween){Column{Text("Characters",style=MaterialTheme.typography.titleMedium);Text("Tap a character to edit the full sheet.",style=MaterialTheme.typography.bodySmall)};Button(onClick={adding=true}){Text("Add")}};LazyColumn(contentPadding=PaddingValues(12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){items(chars,key={it.id}){c->ElevatedCard(Modifier.fillMaxWidth().clickable{editing=c}){Column(Modifier.padding(14.dp)){Text(c.name,fontWeight=FontWeight.Bold,style=MaterialTheme.typography.titleMedium);if(c.species.isNotBlank()||c.age.isNotBlank())Text(listOf(c.species,c.age).filter{it.isNotBlank()}.joinToString(" • "));if(c.relationship.isNotBlank())Text("Relationship: ${c.relationship}");if(c.personality.isNotBlank())Text(c.personality,maxLines=2)}}}}};if(adding)campaign?.let{CharacterEditorDialog(CharacterEntity(campaignId=it.id,name=""),true,{adding=false},{vm.addCharacter(it);adding=false},null)};editing?.let{c->CharacterEditorDialog(c,false,{editing=null},{vm.updateCharacter(it);editing=null},{vm.deleteCharacter(c);editing=null})}}
-@OptIn(ExperimentalMaterial3Api::class) @Composable private fun CharacterEditorDialog(initial:CharacterEntity,isNew:Boolean,onDismiss:()->Unit,onSave:(CharacterEntity)->Unit,onDelete:(()->Unit)?){var c by remember(initial){mutableStateOf(initial)};BasicAlertDialog(onDismissRequest=onDismiss){Surface(Modifier.fillMaxWidth(.96f).fillMaxHeight(.94f),shape=RoundedCornerShape(24.dp)){Column(Modifier.fillMaxSize()){Row(Modifier.fillMaxWidth().padding(18.dp),horizontalArrangement=Arrangement.SpaceBetween){Text(if(isNew)"New Character" else c.name.ifBlank{"Character Sheet"},style=MaterialTheme.typography.headlineSmall,fontWeight=FontWeight.Bold);IconButton(onClick=onDismiss){Icon(Icons.Default.Close,"Close")}};Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal=18.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){Field("Name",c.name){c=c.copy(name=it)};Field("Aliases",c.aliases){c=c.copy(aliases=it)};Field("Species / race",c.species){c=c.copy(species=it)};Field("Age",c.age){c=c.copy(age=it)};Field("Pronouns",c.pronouns){c=c.copy(pronouns=it)};Field("Status",c.status){c=c.copy(status=it)};Field("Appearance",c.appearance,3){c=c.copy(appearance=it)};Field("Personality",c.personality,3){c=c.copy(personality=it)};Field("Backstory",c.backstory,4){c=c.copy(backstory=it)};Field("Abilities / powers",c.abilities,3){c=c.copy(abilities=it)};Field("Equipment / inventory",c.equipment,3){c=c.copy(equipment=it)};Field("Relationship",c.relationship,2){c=c.copy(relationship=it)};Field("Affiliations / factions",c.affiliations,2){c=c.copy(affiliations=it)};Field("Goals / motivations",c.goals,3){c=c.copy(goals=it)};Field("Fears / vulnerabilities",c.fears,3){c=c.copy(fears=it)};Field("Secrets",c.secrets,3){c=c.copy(secrets=it)};Field("Injuries / conditions",c.injuries,3){c=c.copy(injuries=it)};Field("Additional notes",c.notes,4){c=c.copy(notes=it)};Text("Internal ID: ${if(c.id==0L)"assigned when saved" else c.id}",style=MaterialTheme.typography.labelSmall)};Row(Modifier.fillMaxWidth().padding(16.dp),horizontalArrangement=Arrangement.End){if(!isNew&&onDelete!=null)TextButton(onClick=onDelete){Text("Delete",color=MaterialTheme.colorScheme.error)};TextButton(onClick=onDismiss){Text("Cancel")};Button(onClick={onSave(c)},enabled=c.name.isNotBlank()){Text("Save character")}}}}}}
-@Composable private fun Field(label:String,value:String,min:Int=1,on:(String)->Unit){OutlinedTextField(value,on,label={Text(label)},modifier=Modifier.fillMaxWidth(),minLines=min,maxLines=if(min==1)2 else min+3)}
-@Composable private fun CampaignEditorDialog(campaign:CampaignEntity,onDismiss:()->Unit,onSave:(CampaignEntity)->Unit){var c by remember(campaign){mutableStateOf(campaign)};AlertDialog(onDismissRequest=onDismiss,title={Text("Edit campaign")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){Field("Campaign name",c.name){c=c.copy(name=it)};Field("Description",c.description,2){c=c.copy(description=it)};Field("World / setting",c.setting,2){c=c.copy(setting=it)};Field("Genre / tone",c.genreTone,2){c=c.copy(genreTone=it)};Field("Current location",c.currentLocation){c=c.copy(currentLocation=it)};Field("Current objective",c.currentObjective,2){c=c.copy(currentObjective=it)}}},confirmButton={Button(onClick={onSave(c)},enabled=c.name.isNotBlank()){Text("Save")}},dismissButton={TextButton(onClick=onDismiss){Text("Cancel")}})}
-@Composable private fun ArchivedCampaignsDialog(campaigns:List<CampaignEntity>,onDismiss:()->Unit,onRestore:(CampaignEntity)->Unit,onDelete:(CampaignEntity)->Unit){AlertDialog(onDismissRequest=onDismiss,title={Text("Archived campaigns")},text={LazyColumn(Modifier.heightIn(max=420.dp)){items(campaigns,key={it.id}){c->ElevatedCard(Modifier.fillMaxWidth().padding(vertical=4.dp)){Column(Modifier.padding(12.dp)){Text(c.name,fontWeight=FontWeight.Bold);Row{TextButton(onClick={onRestore(c)}){Text("Restore")};TextButton(onClick={onDelete(c)}){Text("Delete",color=MaterialTheme.colorScheme.error)}}}}}}},confirmButton={TextButton(onClick=onDismiss){Text("Done")}})}
-@Composable private fun CreateCampaignDialog(onDismiss:()->Unit,onCreate:(String,String)->Unit){var n by remember{mutableStateOf("")};var d by remember{mutableStateOf("")};AlertDialog(onDismissRequest=onDismiss,title={Text("New campaign")},text={Column{OutlinedTextField(n,{n=it},label={Text("Campaign name")});OutlinedTextField(d,{d=it},label={Text("Description")})}},confirmButton={Button(onClick={onCreate(n,d)},enabled=n.isNotBlank()){Text("Create")}},dismissButton={TextButton(onClick=onDismiss){Text("Cancel")}})}
-@Composable private fun AddMemoryDialog(onDismiss:()->Unit,onAdd:(String,String,String)->Unit){var cat by remember{mutableStateOf("Canon")};var t by remember{mutableStateOf("")};var c by remember{mutableStateOf("")};AlertDialog(onDismissRequest=onDismiss,title={Text("Add memory")},text={Column{OutlinedTextField(cat,{cat=it},label={Text("Category")});OutlinedTextField(t,{t=it},label={Text("Title")});OutlinedTextField(c,{c=it},label={Text("Memory")},minLines=3)}},confirmButton={Button(onClick={onAdd(t,c,cat)},enabled=t.isNotBlank()&&c.isNotBlank()){Text("Save")}},dismissButton={TextButton(onClick=onDismiss){Text("Cancel")}})}
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChronicleScreen(vm: ChronicleViewModel) {
+    val campaigns by vm.campaigns.collectAsState()
+    val archived by vm.archivedCampaigns.collectAsState()
+    val selected by vm.selectedCampaign.collectAsState()
+    val ps by vm.providerSettings.collectAsState()
+    val error by vm.lastError.collectAsState()
+    val proposals by vm.pendingProposals.collectAsState()
+
+    var tab by remember { mutableStateOf(ChronicleTab.CHAT) }
+    var create by remember { mutableStateOf(false) }
+    var provider by remember { mutableStateOf(false) }
+    var editCampaign by remember { mutableStateOf(false) }
+    var archiveDlg by remember { mutableStateOf(false) }
+    var deleteDlg by remember { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+
+    val snack = remember { SnackbarHostState() }
+    LaunchedEffect(error) {
+        error?.let {
+            snack.showSnackbar(it)
+            vm.clearError()
+        }
+    }
+
+    Scaffold(
+        snackbarHost = { SnackbarHost(snack) },
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("Chronicle", fontWeight = FontWeight.Bold)
+                        Text(
+                            selected?.name ?: "No campaign selected",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { provider = true }) {
+                        Icon(Icons.Default.Settings, "AI settings")
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) {
+                            Icon(Icons.Default.MoreVert, "Campaign options")
+                        }
+                        DropdownMenu(
+                            expanded = menu,
+                            onDismissRequest = { menu = false }
+                        ) {
+                            if (selected != null) {
+                                DropdownMenuItem(
+                                    text = { Text("Edit campaign") },
+                                    onClick = { menu = false; editCampaign = true },
+                                    leadingIcon = { Icon(Icons.Default.Edit, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Archive / close") },
+                                    onClick = {
+                                        menu = false
+                                        selected?.let(vm::archiveCampaign)
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.Archive, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete campaign") },
+                                    onClick = { menu = false; deleteDlg = true },
+                                    leadingIcon = { Icon(Icons.Default.Delete, null) }
+                                )
+                            }
+                            if (archived.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Archived campaigns") },
+                                    onClick = { menu = false; archiveDlg = true },
+                                    leadingIcon = { Icon(Icons.Default.Inventory2, null) }
+                                )
+                            }
+                        }
+                    }
+                    IconButton(onClick = { create = true }) {
+                        Icon(Icons.Default.Add, "New campaign")
+                    }
+                }
+            )
+        },
+        bottomBar = {
+            NavigationBar {
+                ChronicleTab.entries.forEach { item ->
+                    NavigationBarItem(
+                        selected = tab == item,
+                        onClick = { tab = item },
+                        icon = {
+                            if (item == ChronicleTab.REVIEW) {
+                                BadgedBox(
+                                    badge = {
+                                        if (proposals.isNotEmpty()) {
+                                            Badge {
+                                                Text(
+                                                    if (proposals.size > 99) "99+"
+                                                    else proposals.size.toString()
+                                                )
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(Icons.Default.Notifications, item.label)
+                                }
+                            } else {
+                                Icon(
+                                    when (item) {
+                                        ChronicleTab.CHAT -> Icons.Default.Chat
+                                        ChronicleTab.MEMORY -> Icons.Default.Book
+                                        ChronicleTab.CHARACTERS -> Icons.Default.Groups
+                                        ChronicleTab.REVIEW -> Icons.Default.Notifications
+                                    },
+                                    item.label
+                                )
+                            }
+                        },
+                        label = { Text(item.label) }
+                    )
+                }
+            }
+        }
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            LazyRow(
+                Modifier.fillMaxWidth().padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(campaigns, key = { it.id }) { c ->
+                    FilterChip(
+                        selected = c.id == selected?.id,
+                        onClick = { vm.selectCampaign(c.id) },
+                        label = { Text(c.name) }
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = { create = true },
+                        label = { Text("New campaign") },
+                        leadingIcon = { Icon(Icons.Default.Add, null) }
+                    )
+                }
+            }
+
+            if (selected == null) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Button(onClick = { create = true }) { Text("Create campaign") }
+                }
+            } else {
+                when (tab) {
+                    ChronicleTab.CHAT -> ChatTab(vm, ps.enabled)
+                    ChronicleTab.MEMORY -> MemoryTab(vm)
+                    ChronicleTab.CHARACTERS -> CharactersTab(vm)
+                    ChronicleTab.REVIEW -> ReviewTab(vm)
+                }
+            }
+        }
+    }
+
+    if (create) {
+        CreateCampaignDialog({ create = false }) { n, d ->
+            vm.createCampaign(n, d)
+            create = false
+        }
+    }
+
+    if (provider) {
+        ProviderSettingsDialog(ps, { provider = false }) {
+            vm.saveProviderSettings(it)
+            provider = false
+        }
+    }
+
+    selected?.let { c ->
+        if (editCampaign) {
+            CampaignEditorDialog(c, { editCampaign = false }) {
+                vm.updateCampaign(it)
+                editCampaign = false
+            }
+        }
+
+        if (deleteDlg) {
+            AlertDialog(
+                onDismissRequest = { deleteDlg = false },
+                title = { Text("Delete ${c.name}?") },
+                text = {
+                    Text(
+                        "This permanently deletes its chat, memories, characters, " +
+                            "and review notifications."
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            vm.deleteCampaign(c)
+                            deleteDlg = false
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        )
+                    ) { Text("Delete permanently") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { deleteDlg = false }) { Text("Cancel") }
+                }
+            )
+        }
+    }
+
+    if (archiveDlg) {
+        ArchivedCampaignsDialog(
+            archived,
+            { archiveDlg = false },
+            vm::restoreCampaign,
+            vm::deleteCampaign
+        )
+    }
+}
+
+@Composable
+private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
+    val msgs by vm.messages.collectAsState()
+    val gen by vm.isGenerating.collectAsState()
+    val scanning by vm.isReviewScanning.collectAsState()
+    var input by remember { mutableStateOf("") }
+
+    Column(Modifier.fillMaxSize()) {
+        Text(
+            when {
+                gen -> "Chronicle is writing…"
+                scanning -> "Reply complete • checking for Review suggestions…"
+                real -> "AI enabled • campaign-isolated context"
+                else -> "Demo mode • tap ⚙ to connect"
+            },
+            Modifier.padding(12.dp),
+            style = MaterialTheme.typography.labelSmall
+        )
+
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            items(msgs, key = { it.id }) { m -> MessageBubble(m) }
+            if (gen) {
+                item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            }
+        }
+
+        Row(
+            Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            OutlinedTextField(
+                input,
+                { input = it },
+                Modifier.weight(1f),
+                placeholder = { Text("Continue the story…") },
+                maxLines = 5
+            )
+            Spacer(Modifier.width(8.dp))
+            FilledIconButton(
+                onClick = {
+                    val t = input
+                    input = ""
+                    vm.sendMessage(t)
+                },
+                enabled = input.isNotBlank() && !gen
+            ) {
+                Icon(Icons.Default.Send, "Send")
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageBubble(m: MessageEntity) {
+    val u = m.role == "user"
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
+    ) {
+        Column(
+            Modifier.fillMaxWidth(.88f)
+                .background(
+                    if (u) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(16.dp)
+                )
+                .padding(12.dp)
+        ) {
+            Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
+            Text(m.content)
+        }
+    }
+}
+
+@Composable
+private fun MemoryTab(vm: ChronicleViewModel) {
+    val mem by vm.memories.collectAsState()
+    var add by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Campaign Memory", style = MaterialTheme.typography.titleMedium)
+            Button(onClick = { add = true }) { Text("Add") }
+        }
+
+        LazyColumn(
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(mem, key = { it.id }) { m ->
+                ElevatedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("${m.category} • ${m.title}", fontWeight = FontWeight.Bold)
+                        Text(m.content)
+                        TextButton(onClick = { vm.deleteMemory(m) }) { Text("Remove") }
+                    }
+                }
+            }
+        }
+    }
+
+    if (add) {
+        AddMemoryDialog({ add = false }) { t, c, cat ->
+            vm.addMemory(t, c, cat)
+            add = false
+        }
+    }
+}
+
+@Composable
+private fun CharactersTab(vm: ChronicleViewModel) {
+    val chars by vm.characters.collectAsState()
+    val campaign by vm.selectedCampaign.collectAsState()
+    var editing by remember { mutableStateOf<CharacterEntity?>(null) }
+    var adding by remember { mutableStateOf(false) }
+
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.fillMaxWidth().padding(12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column {
+                Text("Characters", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Tap a character to edit the full sheet.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Button(onClick = { adding = true }) { Text("Add") }
+        }
+
+        LazyColumn(
+            contentPadding = PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(chars, key = { it.id }) { c ->
+                ElevatedCard(
+                    Modifier.fillMaxWidth().clickable { editing = c }
+                ) {
+                    Column(Modifier.padding(14.dp)) {
+                        Text(
+                            c.name,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (c.species.isNotBlank() || c.age.isNotBlank()) {
+                            Text(
+                                listOf(c.species, c.age)
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" • ")
+                            )
+                        }
+                        if (c.relationship.isNotBlank()) {
+                            Text("Relationship: ${c.relationship}")
+                        }
+                        if (c.personality.isNotBlank()) {
+                            Text(c.personality, maxLines = 2)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (adding) {
+        campaign?.let {
+            CharacterEditorDialog(
+                CharacterEntity(campaignId = it.id, name = ""),
+                true,
+                { adding = false },
+                {
+                    vm.addCharacter(it)
+                    adding = false
+                },
+                null
+            )
+        }
+    }
+
+    editing?.let { c ->
+        CharacterEditorDialog(
+            c,
+            false,
+            { editing = null },
+            {
+                vm.updateCharacter(it)
+                editing = null
+            },
+            {
+                vm.deleteCharacter(c)
+                editing = null
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CharacterEditorDialog(
+    initial: CharacterEntity,
+    isNew: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (CharacterEntity) -> Unit,
+    onDelete: (() -> Unit)?
+) {
+    var c by remember(initial) { mutableStateOf(initial) }
+
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            Modifier.fillMaxWidth(.96f).fillMaxHeight(.94f),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().padding(18.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        if (isNew) "New Character" else c.name.ifBlank { "Character Sheet" },
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.Close, "Close")
+                    }
+                }
+
+                Column(
+                    Modifier.weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Field("Name", c.name) { c = c.copy(name = it) }
+                    Field("Aliases", c.aliases) { c = c.copy(aliases = it) }
+                    Field("Species / race", c.species) { c = c.copy(species = it) }
+                    Field("Age", c.age) { c = c.copy(age = it) }
+                    Field("Pronouns", c.pronouns) { c = c.copy(pronouns = it) }
+                    Field("Status", c.status) { c = c.copy(status = it) }
+                    Field("Appearance", c.appearance, 3) { c = c.copy(appearance = it) }
+                    Field("Personality", c.personality, 3) { c = c.copy(personality = it) }
+                    Field("Backstory", c.backstory, 4) { c = c.copy(backstory = it) }
+                    Field("Abilities / powers", c.abilities, 3) { c = c.copy(abilities = it) }
+                    Field("Equipment / inventory", c.equipment, 3) { c = c.copy(equipment = it) }
+                    Field("Relationship", c.relationship, 2) { c = c.copy(relationship = it) }
+                    Field("Affiliations / factions", c.affiliations, 2) { c = c.copy(affiliations = it) }
+                    Field("Goals / motivations", c.goals, 3) { c = c.copy(goals = it) }
+                    Field("Fears / vulnerabilities", c.fears, 3) { c = c.copy(fears = it) }
+                    Field("Secrets", c.secrets, 3) { c = c.copy(secrets = it) }
+                    Field("Injuries / conditions", c.injuries, 3) { c = c.copy(injuries = it) }
+                    Field("Additional notes", c.notes, 4) { c = c.copy(notes = it) }
+                    Text(
+                        "Internal ID: ${if (c.id == 0L) "assigned when saved" else c.id}",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    if (!isNew && onDelete != null) {
+                        TextButton(onClick = onDelete) {
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Button(
+                        onClick = { onSave(c) },
+                        enabled = c.name.isNotBlank()
+                    ) {
+                        Text("Save character")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun Field(
+    label: String,
+    value: String,
+    min: Int = 1,
+    on: (String) -> Unit
+) {
+    OutlinedTextField(
+        value,
+        on,
+        label = { Text(label) },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = min,
+        maxLines = if (min == 1) 2 else min + 3
+    )
+}
+
+@Composable
+private fun CampaignEditorDialog(
+    campaign: CampaignEntity,
+    onDismiss: () -> Unit,
+    onSave: (CampaignEntity) -> Unit
+) {
+    var c by remember(campaign) { mutableStateOf(campaign) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit campaign") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Field("Campaign name", c.name) { c = c.copy(name = it) }
+                Field("Description", c.description, 2) { c = c.copy(description = it) }
+                Field("World / setting", c.setting, 2) { c = c.copy(setting = it) }
+                Field("Genre / tone", c.genreTone, 2) { c = c.copy(genreTone = it) }
+                Field("Current location", c.currentLocation) {
+                    c = c.copy(currentLocation = it)
+                }
+                Field("Current objective", c.currentObjective, 2) {
+                    c = c.copy(currentObjective = it)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(c) },
+                enabled = c.name.isNotBlank()
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun ArchivedCampaignsDialog(
+    campaigns: List<CampaignEntity>,
+    onDismiss: () -> Unit,
+    onRestore: (CampaignEntity) -> Unit,
+    onDelete: (CampaignEntity) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Archived campaigns") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                items(campaigns, key = { it.id }) { c ->
+                    ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                        Column(Modifier.padding(12.dp)) {
+                            Text(c.name, fontWeight = FontWeight.Bold)
+                            Row {
+                                TextButton(onClick = { onRestore(c) }) { Text("Restore") }
+                                TextButton(onClick = { onDelete(c) }) {
+                                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
+}
+
+@Composable
+private fun CreateCampaignDialog(
+    onDismiss: () -> Unit,
+    onCreate: (String, String) -> Unit
+) {
+    var n by remember { mutableStateOf("") }
+    var d by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New campaign") },
+        text = {
+            Column {
+                OutlinedTextField(n, { n = it }, label = { Text("Campaign name") })
+                OutlinedTextField(d, { d = it }, label = { Text("Description") })
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onCreate(n, d) },
+                enabled = n.isNotBlank()
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun AddMemoryDialog(
+    onDismiss: () -> Unit,
+    onAdd: (String, String, String) -> Unit
+) {
+    var cat by remember { mutableStateOf("Canon") }
+    var t by remember { mutableStateOf("") }
+    var c by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add memory") },
+        text = {
+            Column {
+                OutlinedTextField(cat, { cat = it }, label = { Text("Category") })
+                OutlinedTextField(t, { t = it }, label = { Text("Title") })
+                OutlinedTextField(
+                    c,
+                    { c = it },
+                    label = { Text("Memory") },
+                    minLines = 3
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onAdd(t, c, cat) },
+                enabled = t.isNotBlank() && c.isNotBlank()
+            ) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
