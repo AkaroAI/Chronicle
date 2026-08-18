@@ -1,6 +1,8 @@
 package com.akaroai.chronicle.ui
 
-import androidx.lifecycle.*
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
@@ -117,19 +119,30 @@ class ChronicleViewModel(
     fun deleteCharacter(c: CharacterEntity) =
         viewModelScope.launch { repository.deleteCharacter(c) }
 
-    fun approveProposal(proposal: ChangeProposalEntity, editedChanges: String? = null) {
+    fun approveProposal(p: ChangeProposalEntity, edited: String? = null) {
         viewModelScope.launch {
             try {
-                repository.approveProposal(proposal, editedChanges)
+                repository.approveProposal(p, edited)
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not approve proposal."
             }
         }
     }
 
-    fun rejectProposal(proposal: ChangeProposalEntity) {
-        viewModelScope.launch { repository.rejectProposal(proposal) }
-    }
+    fun rejectProposal(p: ChangeProposalEntity) =
+        viewModelScope.launch { repository.rejectProposal(p) }
+
+    fun approveAll(items: List<ChangeProposalEntity>) =
+        viewModelScope.launch {
+            try {
+                repository.approveAll(items)
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Could not approve group."
+            }
+        }
+
+    fun rejectAll(items: List<ChangeProposalEntity>) =
+        viewModelScope.launch { repository.rejectAll(items) }
 
     fun sendMessage(text: String) {
         val campaign = selectedCampaign.value ?: return
@@ -141,15 +154,17 @@ class ChronicleViewModel(
 
             try {
                 repository.addMessage(campaign.id, "user", text)
-
                 val context = buildCampaignContext(campaign)
+
                 val history = messages.value
                     .takeLast(40)
                     .map { ProviderMessage(it.role, it.content) }
                     .let { existing ->
-                        if (existing.lastOrNull()?.role == "user" &&
+                        if (
+                            existing.lastOrNull()?.role == "user" &&
                             existing.lastOrNull()?.content == text
-                        ) existing else existing + ProviderMessage("user", text)
+                        ) existing
+                        else existing + ProviderMessage("user", text)
                     }
 
                 val system = """
@@ -157,6 +172,7 @@ class ChronicleViewModel(
                     Preserve established canon, causal continuity, character autonomy, and consequences.
                     Never import facts from another campaign.
                     Treat supplied campaign and character-sheet data as authoritative.
+                    Cast Tier indicates narrative importance, not moral worth.
                     If something is not established here, do not pretend you remember it.
                 """.trimIndent()
 
@@ -177,15 +193,16 @@ class ChronicleViewModel(
 
                 repository.addMessage(campaign.id, "assistant", reply)
 
-                if (_providerSettings.value.enabled &&
+                if (
+                    _providerSettings.value.enabled &&
                     _providerSettings.value.autoReviewEnabled
                 ) {
                     scanForProposals(
-                        campaign = campaign,
-                        context = context,
-                        userText = text,
-                        assistantReply = reply,
-                        provider = provider
+                        campaign,
+                        context,
+                        text,
+                        reply,
+                        provider
                     )
                 }
             } catch (t: Throwable) {
@@ -208,11 +225,11 @@ class ChronicleViewModel(
         viewModelScope.launch {
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
-                campaign = campaign,
-                context = buildCampaignContext(campaign),
-                userText = lastUser.content,
-                assistantReply = lastAssistant.content,
-                provider = provider
+                campaign,
+                buildCampaignContext(campaign),
+                lastUser.content,
+                lastAssistant.content,
+                provider
             )
         }
     }
@@ -230,48 +247,74 @@ class ChronicleViewModel(
         try {
             val analyzerSystem = """
                 You are Chronicle's continuity change detector.
-                Your ONLY job is to identify clearly established story facts from the latest exchange
-                that are worth proposing as persistent campaign data.
+                Return ONLY a JSON array of proposed persistent changes from the latest exchange.
 
-                IMPORTANT:
-                - Never modify canon yourself.
-                - Return proposals only; the user will approve, edit, or reject them.
+                CORE RULES
+                - You may PROPOSE. You never decide canon.
                 - Do not speculate.
-                - Do not convert jokes, questions, possibilities, hypotheticals, plans, or uncertain claims into facts.
-                - Avoid proposing information already present in the supplied campaign context.
-                - Prefer meaningful continuity facts over trivial details.
-                - Maximum 5 proposals.
-                - Return ONLY a JSON array. No markdown and no commentary.
+                - Ignore jokes, hypotheticals, plans, possibilities, questions, and uncertain statements.
+                - Avoid information already stored in campaign context.
+                - Prefer durable continuity over temporary flavor.
+                - Maximum 12 proposals.
 
-                Allowed target types:
+                CAST TIERS
+                Main: core protagonists/companions. Track meaningful emotional, physical, relational,
+                ability, equipment, goal, secret, and status changes closely.
+                Secondary: recurring important allies, rivals, family, villains, mentors. Track meaningful changes.
+                Supporting: arc-relevant recurring characters. Track only changes likely to matter again.
+                Background: incidental characters. DO NOT create character_update proposals for them unless
+                their change is HIGH or CRITICAL and directly impacts Main cast, world state, a major event,
+                quest, faction, location, or important lore.
 
-                1) memory_new
-                   changes:
-                   {"category":"Timeline|Lore|Relationship|Canon|Quest","title":"short title","content":"fact to remember"}
+                IMPORTANT DISTINCTION
+                A background character can reveal or cause important WORLD/EVENT/LORE facts.
+                In that case file the proposal under World, Events, Lore, Relationships, or Quests rather
+                than creating trivial background-character records.
 
-                2) character_update
-                   targetId MUST be an existing character ID from the supplied context.
-                   changes:
-                   {"fields":{"fieldName":"complete new field value"}}
-                   Allowed fields: name, aliases, species, age, pronouns, appearance, personality,
-                   backstory, abilities, equipment, relationship, affiliations, goals, fears,
-                   secrets, injuries, notes, status.
+                PRIORITY
+                Critical = death/resurrection, permanent transformation, catastrophic world change,
+                major betrayal, core relationship creation/destruction, major canon contradiction.
+                High = major injury/healing, new permanent power, major quest outcome, important reveal,
+                major relationship development, meaningful cast-tier promotion.
+                Normal = durable goals, equipment, affiliations, recurring development, relevant lore.
+                Low = useful but nonessential persistent detail. Avoid low-value background noise.
 
-                3) campaign_update
-                   changes:
-                   {"fields":{"currentLocation":"...","currentObjective":"..."}}
-                   Allowed fields: name, description, setting, genreTone, currentLocation, currentObjective.
+                GROUP TYPES
+                Characters, World, Events, Lore, Relationships, Quests, Other
 
-                Every proposal object MUST have:
+                ALLOWED TARGETS
+
+                memory_new
+                changes={"category":"Timeline|Lore|Relationship|Canon|Quest","title":"...","content":"..."}
+
+                character_update
+                targetId MUST match an existing character ID.
+                changes={"fields":{"fieldName":"COMPLETE NEW VALUE"}}
+                Allowed fields: name, aliases, species, age, pronouns, appearance, personality,
+                backstory, abilities, equipment, relationship, affiliations, goals, fears,
+                secrets, injuries, notes, status.
+
+                campaign_update
+                changes={"fields":{"currentLocation":"...","currentObjective":"..."}}
+                Allowed fields: name, description, setting, genreTone, currentLocation, currentObjective.
+
+                cast_tier_update
+                ONLY when repeated story importance clearly changed.
+                changes={"castTier":"Main|Secondary|Supporting|Background"}
+
+                EVERY OBJECT:
                 {
-                  "summary":"plain-English explanation of what will change",
-                  "targetType":"memory_new|character_update|campaign_update",
+                  "summary":"plain English",
+                  "targetType":"...",
                   "targetId":123 or null,
-                  "reason":"what in the latest exchange supports this",
+                  "reason":"evidence from latest exchange",
+                  "priority":"Critical|High|Normal|Low",
+                  "groupType":"Characters|World|Events|Lore|Relationships|Quests|Other",
+                  "groupLabel":"character name, location, arc, faction, relationship, or short folder label",
                   "changes":{...}
                 }
 
-                If there is nothing worth saving, return [].
+                If nothing deserves persistence, return [].
             """.trimIndent()
 
             val raw = provider.generate(
@@ -287,22 +330,39 @@ class ChronicleViewModel(
                 )
             )
 
-            val parsed = ProposalParser.parse(raw)
-            parsed.forEach {
-                repository.addProposal(
-                    ChangeProposalEntity(
-                        campaignId = campaign.id,
-                        summary = it.summary,
-                        targetType = it.targetType,
-                        targetId = it.targetId,
-                        proposedChanges = it.proposedChanges,
-                        reason = it.reason
+            ProposalParser.parse(raw).forEach { parsed ->
+                val targetCharacter = parsed.targetId?.let { id ->
+                    characters.value.firstOrNull { it.id == id }
+                }
+
+                val passesImpactGate =
+                    if (
+                        parsed.targetType == "character_update" &&
+                        targetCharacter?.castTier == "Background"
+                    ) {
+                        parsed.priority in setOf("Critical", "High")
+                    } else true
+
+                if (passesImpactGate) {
+                    repository.addProposal(
+                        ChangeProposalEntity(
+                            campaignId = campaign.id,
+                            summary = parsed.summary,
+                            targetType = parsed.targetType,
+                            targetId = parsed.targetId,
+                            proposedChanges = parsed.proposedChanges,
+                            reason = parsed.reason,
+                            priority = parsed.priority,
+                            groupType = parsed.groupType,
+                            groupLabel = parsed.groupLabel.ifBlank {
+                                targetCharacter?.name.orEmpty()
+                            }
+                        )
                     )
-                )
+                }
             }
         } catch (_: Throwable) {
-            // Review extraction is intentionally non-blocking.
-            // A failed analyzer call should never interrupt the campaign chat.
+            // Proposal extraction never interrupts active roleplay.
         } finally {
             _isReviewScanning.value = false
         }
@@ -327,7 +387,7 @@ class ChronicleViewModel(
             appendLine("CHARACTERS:")
             characters.value.forEach { c ->
                 appendLine(
-                    "${c.name} [ID ${c.id}] | aliases=${c.aliases} | species=${c.species} | " +
+                    "${c.name} [ID ${c.id}] [CAST ${c.castTier}] | aliases=${c.aliases} | species=${c.species} | " +
                         "age=${c.age} | pronouns=${c.pronouns} | appearance=${c.appearance} | " +
                         "personality=${c.personality} | backstory=${c.backstory} | abilities=${c.abilities} | " +
                         "equipment=${c.equipment} | relationship=${c.relationship} | affiliations=${c.affiliations} | " +

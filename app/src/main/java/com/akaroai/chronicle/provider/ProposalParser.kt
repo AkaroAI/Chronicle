@@ -8,10 +8,16 @@ data class ParsedProposal(
     val targetType: String,
     val targetId: Long?,
     val proposedChanges: String,
-    val reason: String
+    val reason: String,
+    val priority: String,
+    val groupType: String,
+    val groupLabel: String
 )
 
 object ProposalParser {
+    private val priorities = setOf("Critical", "High", "Normal", "Low")
+    private val groups = setOf("Characters", "World", "Events", "Lore", "Relationships", "Quests", "Other")
+
     fun parse(raw: String): List<ParsedProposal> {
         val cleaned = raw
             .replace("```json", "")
@@ -35,9 +41,17 @@ object ProposalParser {
                 item.optLong("targetId").takeIf { it > 0 }
             } else null
 
+            val priority = item.optString("priority", "Normal")
+                .takeIf { it in priorities } ?: "Normal"
+
+            val groupType = item.optString("groupType", defaultGroup(targetType))
+                .takeIf { it in groups } ?: defaultGroup(targetType)
+
+            val groupLabel = item.optString("groupLabel").trim()
+
             if (
                 summary.isNotBlank() &&
-                targetType in setOf("memory_new", "character_update", "campaign_update") &&
+                targetType in setOf("memory_new", "character_update", "campaign_update", "cast_tier_update") &&
                 changes.length() > 0
             ) {
                 result += ParsedProposal(
@@ -45,12 +59,15 @@ object ProposalParser {
                     targetType = targetType,
                     targetId = targetId,
                     proposedChanges = changes.toString(),
-                    reason = reason
+                    reason = reason,
+                    priority = priority,
+                    groupType = groupType,
+                    groupLabel = groupLabel
                 )
             }
         }
 
-        return result.take(5)
+        return result.take(12)
     }
 
     fun prettyChanges(raw: String): String {
@@ -76,6 +93,27 @@ object ProposalParser {
             raw
         }
     }
+
+    fun changedFieldNames(raw: String): Set<String> {
+        return try {
+            val obj = JSONObject(raw)
+            val fields = obj.optJSONObject("fields") ?: obj
+            buildSet {
+                val keys = fields.keys()
+                while (keys.hasNext()) add(keys.next())
+            }
+        } catch (_: Throwable) {
+            emptySet()
+        }
+    }
+
+    private fun defaultGroup(targetType: String): String =
+        when (targetType) {
+            "character_update", "cast_tier_update" -> "Characters"
+            "campaign_update" -> "World"
+            "memory_new" -> "Lore"
+            else -> "Other"
+        }
 
     private fun humanize(value: String): String =
         value.replace(Regex("([a-z])([A-Z])"), "$1 $2")

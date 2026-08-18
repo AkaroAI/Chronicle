@@ -67,6 +67,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     IconButton(onClick = { provider = true }) {
                         Icon(Icons.Default.Settings, "AI settings")
                     }
+
                     Box {
                         IconButton(onClick = { menu = true }) {
                             Icon(Icons.Default.MoreVert, "Campaign options")
@@ -104,6 +105,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                             }
                         }
                     }
+
                     IconButton(onClick = { create = true }) {
                         Icon(Icons.Default.Add, "New campaign")
                     }
@@ -214,8 +216,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                 title = { Text("Delete ${c.name}?") },
                 text = {
                     Text(
-                        "This permanently deletes its chat, memories, characters, " +
-                            "and review notifications."
+                        "This permanently deletes its chat, memories, characters, and review notifications."
                     )
                 },
                 confirmButton = {
@@ -257,7 +258,7 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
         Text(
             when {
                 gen -> "Chronicle is writing…"
-                scanning -> "Reply complete • checking for Review suggestions…"
+                scanning -> "Reply complete • checking Review Inbox…"
                 real -> "AI enabled • campaign-isolated context"
                 else -> "Demo mode • tap ⚙ to connect"
             },
@@ -271,9 +272,7 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(msgs, key = { it.id }) { m -> MessageBubble(m) }
-            if (gen) {
-                item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
-            }
+            if (gen) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
 
         Row(
@@ -377,7 +376,7 @@ private fun CharactersTab(vm: ChronicleViewModel) {
             Column {
                 Text("Characters", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Tap a character to edit the full sheet.",
+                    "Cast tier controls how aggressively Chronicle tracks each character.",
                     style = MaterialTheme.typography.bodySmall
                 )
             }
@@ -393,11 +392,19 @@ private fun CharactersTab(vm: ChronicleViewModel) {
                     Modifier.fillMaxWidth().clickable { editing = c }
                 ) {
                     Column(Modifier.padding(14.dp)) {
-                        Text(
-                            c.name,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                c.name,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            AssistChip(onClick = {}, label = { Text(c.castTier) })
+                        }
+
                         if (c.species.isNotBlank() || c.age.isNotBlank()) {
                             Text(
                                 listOf(c.species, c.age)
@@ -459,6 +466,7 @@ private fun CharacterEditorDialog(
     onDelete: (() -> Unit)?
 ) {
     var c by remember(initial) { mutableStateOf(initial) }
+    var tierMenu by remember { mutableStateOf(false) }
 
     BasicAlertDialog(onDismissRequest = onDismiss) {
         Surface(
@@ -486,6 +494,38 @@ private fun CharacterEditorDialog(
                         .padding(horizontal = 18.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Box {
+                        OutlinedButton(onClick = { tierMenu = true }) {
+                            Icon(Icons.Default.Star, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Cast Tier: ${c.castTier}")
+                        }
+                        DropdownMenu(
+                            expanded = tierMenu,
+                            onDismissRequest = { tierMenu = false }
+                        ) {
+                            listOf("Main", "Secondary", "Supporting", "Background").forEach { tier ->
+                                DropdownMenuItem(
+                                    text = { Text(tier) },
+                                    onClick = {
+                                        c = c.copy(castTier = tier)
+                                        tierMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        when (c.castTier) {
+                            "Main" -> "Highest continuity priority. Chronicle closely tracks meaningful changes."
+                            "Secondary" -> "Important recurring cast. Chronicle tracks durable meaningful changes."
+                            "Supporting" -> "Arc-relevant cast. Chronicle filters minor details."
+                            else -> "Background impact gate active. Character proposals require major impact."
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
                     Field("Name", c.name) { c = c.copy(name = it) }
                     Field("Aliases", c.aliases) { c = c.copy(aliases = it) }
                     Field("Species / race", c.species) { c = c.copy(species = it) }
@@ -581,9 +621,7 @@ private fun CampaignEditorDialog(
             Button(
                 onClick = { onSave(c) },
                 enabled = c.name.isNotBlank()
-            ) {
-                Text("Save")
-            }
+            ) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
@@ -645,9 +683,7 @@ private fun CreateCampaignDialog(
             Button(
                 onClick = { onCreate(n, d) },
                 enabled = n.isNotBlank()
-            ) {
-                Text("Create")
-            }
+            ) { Text("Create") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
@@ -683,9 +719,7 @@ private fun AddMemoryDialog(
             Button(
                 onClick = { onAdd(t, c, cat) },
                 enabled = t.isNotBlank() && c.isNotBlank()
-            ) {
-                Text("Save")
-            }
+            ) { Text("Save") }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }

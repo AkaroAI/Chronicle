@@ -54,8 +54,25 @@ interface ChronicleDao {
     @Delete
     suspend fun deleteCharacter(character: CharacterEntity)
 
-    @Query("SELECT * FROM change_proposals WHERE campaignId = :campaignId AND status = 'Pending' ORDER BY createdAt DESC")
+    @Query(
+        "SELECT * FROM change_proposals " +
+            "WHERE campaignId = :campaignId AND status = 'Pending' " +
+            "ORDER BY CASE priority " +
+            "WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END, createdAt DESC"
+    )
     fun pendingProposals(campaignId: Long): Flow<List<ChangeProposalEntity>>
+
+    @Query(
+        "SELECT * FROM change_proposals " +
+            "WHERE campaignId = :campaignId AND status = 'Pending' " +
+            "AND targetType = :targetType " +
+            "AND ((targetId IS NULL AND :targetId IS NULL) OR targetId = :targetId)"
+    )
+    suspend fun pendingForTarget(
+        campaignId: Long,
+        targetType: String,
+        targetId: Long?
+    ): List<ChangeProposalEntity>
 
     @Insert
     suspend fun insertProposal(proposal: ChangeProposalEntity): Long
@@ -64,5 +81,8 @@ interface ChronicleDao {
     suspend fun updateProposal(proposal: ChangeProposalEntity)
 
     @Query("UPDATE campaigns SET updatedAt = :whenUpdated WHERE id = :campaignId")
-    suspend fun touchCampaign(campaignId: Long, whenUpdated: Long = System.currentTimeMillis())
+    suspend fun touchCampaign(
+        campaignId: Long,
+        whenUpdated: Long = System.currentTimeMillis()
+    )
 }

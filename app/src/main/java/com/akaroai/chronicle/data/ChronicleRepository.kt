@@ -1,8 +1,9 @@
 package com.akaroai.chronicle.data
 
 import com.akaroai.chronicle.model.*
-import org.json.JSONObject
+import com.akaroai.chronicle.provider.ProposalParser
 import kotlinx.coroutines.flow.Flow
+import org.json.JSONObject
 
 class ChronicleRepository(private val dao: ChronicleDao) {
     fun campaigns(): Flow<List<CampaignEntity>> = dao.campaigns()
@@ -59,18 +60,39 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     suspend fun deleteCharacter(c: CharacterEntity) = dao.deleteCharacter(c)
 
     suspend fun addProposal(proposal: ChangeProposalEntity) {
-        dao.insertProposal(proposal)
+        val oldPending = dao.pendingForTarget(
+            proposal.campaignId,
+            proposal.targetType,
+            proposal.targetId
+        )
+        val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
+
+        val newId = dao.insertProposal(proposal)
+
+        if (newFields.isNotEmpty()) {
+            oldPending.forEach { old ->
+                val overlap = ProposalParser.changedFieldNames(old.proposedChanges)
+                    .intersect(newFields)
+                if (overlap.isNotEmpty()) {
+                    dao.updateProposal(
+                        old.copy(
+                            status = "Superseded",
+                            supersededById = newId
+                        )
+                    )
+                }
+            }
+        }
     }
 
     suspend fun rejectProposal(proposal: ChangeProposalEntity) {
         dao.updateProposal(proposal.copy(status = "Rejected"))
     }
 
-    suspend fun updateProposalChanges(proposal: ChangeProposalEntity, changes: String) {
-        dao.updateProposal(proposal.copy(proposedChanges = changes))
-    }
-
-    suspend fun approveProposal(proposal: ChangeProposalEntity, editedChanges: String? = null) {
+    suspend fun approveProposal(
+        proposal: ChangeProposalEntity,
+        editedChanges: String? = null
+    ) {
         val changesRaw = editedChanges ?: proposal.proposedChanges
         val changes = JSONObject(changesRaw)
 
@@ -90,28 +112,38 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 val current = dao.characterById(id) ?: error("Character no longer exists.")
                 val fields = changes.optJSONObject("fields") ?: changes
 
-                val updated = current.copy(
-                    name = fields.valueOr("name", current.name),
-                    aliases = fields.valueOr("aliases", current.aliases),
-                    species = fields.valueOr("species", current.species),
-                    age = fields.valueOr("age", current.age),
-                    pronouns = fields.valueOr("pronouns", current.pronouns),
-                    appearance = fields.valueOr("appearance", current.appearance),
-                    personality = fields.valueOr("personality", current.personality),
-                    backstory = fields.valueOr("backstory", current.backstory),
-                    abilities = fields.valueOr("abilities", current.abilities),
-                    equipment = fields.valueOr("equipment", current.equipment),
-                    relationship = fields.valueOr("relationship", current.relationship),
-                    affiliations = fields.valueOr("affiliations", current.affiliations),
-                    goals = fields.valueOr("goals", current.goals),
-                    fears = fields.valueOr("fears", current.fears),
-                    secrets = fields.valueOr("secrets", current.secrets),
-                    injuries = fields.valueOr("injuries", current.injuries),
-                    notes = fields.valueOr("notes", current.notes),
-                    status = fields.valueOr("status", current.status),
-                    updatedAt = System.currentTimeMillis()
+                updateCharacter(
+                    current.copy(
+                        name = fields.valueOr("name", current.name),
+                        aliases = fields.valueOr("aliases", current.aliases),
+                        species = fields.valueOr("species", current.species),
+                        age = fields.valueOr("age", current.age),
+                        pronouns = fields.valueOr("pronouns", current.pronouns),
+                        appearance = fields.valueOr("appearance", current.appearance),
+                        personality = fields.valueOr("personality", current.personality),
+                        backstory = fields.valueOr("backstory", current.backstory),
+                        abilities = fields.valueOr("abilities", current.abilities),
+                        equipment = fields.valueOr("equipment", current.equipment),
+                        relationship = fields.valueOr("relationship", current.relationship),
+                        affiliations = fields.valueOr("affiliations", current.affiliations),
+                        goals = fields.valueOr("goals", current.goals),
+                        fears = fields.valueOr("fears", current.fears),
+                        secrets = fields.valueOr("secrets", current.secrets),
+                        injuries = fields.valueOr("injuries", current.injuries),
+                        notes = fields.valueOr("notes", current.notes),
+                        status = fields.valueOr("status", current.status)
+                    )
                 )
-                updateCharacter(updated)
+            }
+
+            "cast_tier_update" -> {
+                val id = proposal.targetId ?: error("Cast-tier proposal has no character ID.")
+                val current = dao.characterById(id) ?: error("Character no longer exists.")
+                val tier = changes.optString("castTier").trim()
+                if (tier !in setOf("Main", "Secondary", "Supporting", "Background")) {
+                    error("Invalid cast tier.")
+                }
+                updateCharacter(current.copy(castTier = tier))
             }
 
             "campaign_update" -> {
@@ -139,6 +171,14 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 status = "Approved"
             )
         )
+    }
+
+    suspend fun approveAll(proposals: List<ChangeProposalEntity>) {
+        proposals.forEach { approveProposal(it) }
+    }
+
+    suspend fun rejectAll(proposals: List<ChangeProposalEntity>) {
+        proposals.forEach { rejectProposal(it) }
     }
 
     private fun JSONObject.valueOr(key: String, fallback: String): String {
