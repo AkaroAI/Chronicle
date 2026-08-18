@@ -7,6 +7,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.akaroai.chronicle.BuildConfig
 import com.akaroai.chronicle.provider.ProviderSettings
 
 @Composable
@@ -23,7 +24,16 @@ fun ProviderSettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("AI Provider") },
+        title = {
+            Column {
+                Text("AI Provider")
+                Text(
+                    "Chronicle v${BuildConfig.VERSION_NAME}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
