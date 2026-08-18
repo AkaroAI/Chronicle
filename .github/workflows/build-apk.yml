@@ -8,8 +8,10 @@ on:
     paths:
       - "app/**"
       - "*.gradle"
+      - "*.gradle.kts"
       - "gradle.properties"
       - "settings.gradle"
+      - "settings.gradle.kts"
       - ".github/workflows/build-apk.yml"
 
 jobs:
@@ -26,6 +28,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Restore Chronicle debug signing key
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: chronicle-debug-signing-key-v1
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -33,6 +41,9 @@ jobs:
 
       - name: Build Chronicle APK
         run: gradle assembleDebug --stacktrace
+
+      - name: Verify signing key exists
+        run: test -f ~/.android/debug.keystore
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
