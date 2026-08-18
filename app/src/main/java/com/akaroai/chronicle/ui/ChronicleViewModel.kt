@@ -11,14 +11,13 @@ import kotlinx.coroutines.launch
 
 class ChronicleViewModel(
     private val repository: ChronicleRepository,
-    private val provider: AiProvider = ChronicleDemoProvider()
+    private val settingsStore: ProviderSettingsStore
 ) : ViewModel() {
 
     val campaigns = repository.campaigns()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     private val _selectedCampaignId = MutableStateFlow<Long?>(null)
-    val selectedCampaignId: StateFlow<Long?> = _selectedCampaignId.asStateFlow()
 
     val selectedCampaign: StateFlow<CampaignEntity?> =
         combine(campaigns, _selectedCampaignId) { list, id ->
@@ -40,8 +39,14 @@ class ChronicleViewModel(
             .flatMapLatest { repository.characters(it.id) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    private val _providerSettings = MutableStateFlow(settingsStore.load())
+    val providerSettings = _providerSettings.asStateFlow()
+
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating = _isGenerating.asStateFlow()
+
+    private val _lastError = MutableStateFlow<String?>(null)
+    val lastError = _lastError.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -53,9 +58,14 @@ class ChronicleViewModel(
         }
     }
 
-    fun selectCampaign(id: Long) {
-        _selectedCampaignId.value = id
+    fun clearError() { _lastError.value = null }
+
+    fun saveProviderSettings(settings: ProviderSettings) {
+        settingsStore.save(settings)
+        _providerSettings.value = settingsStore.load()
     }
+
+    fun selectCampaign(id: Long) { _selectedCampaignId.value = id }
 
     fun createCampaign(name: String, description: String = "") {
         if (name.isBlank()) return
@@ -65,21 +75,10 @@ class ChronicleViewModel(
         }
     }
 
-    fun deleteCampaign(campaign: CampaignEntity) {
-        viewModelScope.launch {
-            repository.deleteCampaign(campaign)
-            if (_selectedCampaignId.value == campaign.id) {
-                _selectedCampaignId.value = null
-            }
-        }
-    }
-
     fun addMemory(title: String, content: String, category: String = "Canon") {
         val id = selectedCampaign.value?.id ?: return
         if (title.isBlank() || content.isBlank()) return
-        viewModelScope.launch {
-            repository.addMemory(id, title, content, category)
-        }
+        viewModelScope.launch { repository.addMemory(id, title, content, category) }
     }
 
     fun deleteMemory(memory: MemoryEntity) {
@@ -89,9 +88,7 @@ class ChronicleViewModel(
     fun addCharacter(name: String, summary: String, relationship: String) {
         val id = selectedCampaign.value?.id ?: return
         if (name.isBlank()) return
-        viewModelScope.launch {
-            repository.addCharacter(id, name, summary, relationship)
-        }
+        viewModelScope.launch { repository.addCharacter(id, name, summary, relationship) }
     }
 
     fun deleteCharacter(character: CharacterEntity) {
@@ -104,43 +101,74 @@ class ChronicleViewModel(
 
         viewModelScope.launch {
             _isGenerating.value = true
+            _lastError.value = null
+
             try {
                 repository.addMessage(campaign.id, "user", text)
 
-                val memoryContext = memories.value.joinToString("\n\n") {
-                    "[${it.category}] ${it.title}: ${it.content}"
+                val memoryContext = buildString {
+                    if (memories.value.isNotEmpty()) {
+                        appendLine("MEMORIES:")
+                        memories.value.forEach {
+                            appendLine("[${it.category}] ${it.title}: ${it.content}")
+                        }
+                    }
+
+                    if (characters.value.isNotEmpty()) {
+                        appendLine()
+                        appendLine("CHARACTERS:")
+                        characters.value.forEach {
+                            appendLine(
+                                "${it.name} | relationship=${it.relationship.ifBlank { "unspecified" }} | " +
+                                    "status=${it.status} | notes=${it.summary}"
+                            )
+                        }
+                    }
                 }
 
-                val recent = messages.value.takeLast(40).map {
-                    ProviderMessage(role = it.role, content = it.content)
+                val history = messages.value.takeLast(40).map {
+                    ProviderMessage(it.role, it.content)
                 } + ProviderMessage("user", text)
 
-                val systemPrompt = buildString {
-                    appendLine("You are the Chronicle campaign storyteller and GM.")
-                    appendLine("Maintain continuity, character autonomy, consequences, and established canon.")
-                    appendLine("Do not mix information from any other campaign.")
-                    appendLine("Treat the supplied memory as campaign-specific canon unless contradicted by newer user instructions.")
-                }
+                val systemPrompt = """
+                    You are Chronicle's campaign storyteller and GM.
+                    Preserve established canon, causal continuity, character autonomy, and consequences.
+                    Never import facts, characters, relationships, or events from another campaign.
+                    If something is not established in this campaign's supplied context, do not pretend you remember it.
+                    Stay immersed unless the user clearly speaks out of character.
+                """.trimIndent()
+
+                val provider: AiProvider =
+                    if (_providerSettings.value.enabled) {
+                        OpenAiCompatibleProvider { settingsStore.load() }
+                    } else {
+                        ChronicleDemoProvider()
+                    }
 
                 val response = provider.generate(
                     ProviderRequest(
                         systemPrompt = systemPrompt,
                         memoryContext = memoryContext,
-                        messages = recent
+                        messages = history
                     )
                 )
 
                 repository.addMessage(campaign.id, "assistant", response)
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Unknown AI provider error."
             } finally {
                 _isGenerating.value = false
             }
         }
     }
 
-    class Factory(private val repository: ChronicleRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: ChronicleRepository,
+        private val settingsStore: ProviderSettingsStore
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return ChronicleViewModel(repository) as T
+            return ChronicleViewModel(repository, settingsStore) as T
         }
     }
 }

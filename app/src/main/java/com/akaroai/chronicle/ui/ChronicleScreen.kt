@@ -25,10 +25,24 @@ enum class ChronicleTab(val label: String) {
 fun ChronicleScreen(vm: ChronicleViewModel) {
     val campaigns by vm.campaigns.collectAsState()
     val selected by vm.selectedCampaign.collectAsState()
+    val providerSettings by vm.providerSettings.collectAsState()
+    val error by vm.lastError.collectAsState()
+
     var tab by remember { mutableStateOf(ChronicleTab.CHAT) }
     var createCampaign by remember { mutableStateOf(false) }
+    var providerDialog by remember { mutableStateOf(false) }
+
+    val snackbar = remember { SnackbarHostState() }
+
+    LaunchedEffect(error) {
+        error?.let {
+            snackbar.showSnackbar(it)
+            vm.clearError()
+        }
+    }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = {
@@ -41,6 +55,9 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { providerDialog = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "AI settings")
+                    }
                     IconButton(onClick = { createCampaign = true }) {
                         Icon(Icons.Default.Add, contentDescription = "New campaign")
                     }
@@ -69,23 +86,16 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
             }
         }
     ) { padding ->
-        Column(
-            Modifier
-                .padding(padding)
-                .fillMaxSize()
-        ) {
-            CampaignStrip(
-                campaigns = campaigns,
-                selectedId = selected?.id,
-                onSelect = vm::selectCampaign,
-                onCreate = { createCampaign = true }
-            )
+        Column(Modifier.padding(padding).fillMaxSize()) {
+            CampaignStrip(campaigns, selected?.id, vm::selectCampaign) {
+                createCampaign = true
+            }
 
             if (selected == null) {
-                EmptyCampaignState(onCreate = { createCampaign = true })
+                EmptyCampaignState { createCampaign = true }
             } else {
                 when (tab) {
-                    ChronicleTab.CHAT -> ChatTab(vm)
+                    ChronicleTab.CHAT -> ChatTab(vm, providerSettings.enabled)
                     ChronicleTab.MEMORY -> MemoryTab(vm)
                     ChronicleTab.CHARACTERS -> CharactersTab(vm)
                 }
@@ -102,6 +112,17 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
             }
         )
     }
+
+    if (providerDialog) {
+        ProviderSettingsDialog(
+            current = providerSettings,
+            onDismiss = { providerDialog = false },
+            onSave = {
+                vm.saveProviderSettings(it)
+                providerDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -112,9 +133,7 @@ private fun CampaignStrip(
     onCreate: () -> Unit
 ) {
     LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(campaigns, key = { it.id }) { campaign ->
@@ -148,33 +167,32 @@ private fun EmptyCampaignState(onCreate: () -> Unit) {
 }
 
 @Composable
-private fun ChatTab(vm: ChronicleViewModel) {
+private fun ChatTab(vm: ChronicleViewModel, realAi: Boolean) {
     val messages by vm.messages.collectAsState()
     val generating by vm.isGenerating.collectAsState()
     var input by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize()) {
+        Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                if (realAi) "AI enabled • campaign-isolated context"
+                else "Demo mode • tap ⚙ to connect an AI provider",
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelSmall
+            )
+        }
+
         LazyColumn(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth(),
+            modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(messages, key = { it.id }) { message ->
-                MessageBubble(message)
-            }
-            if (generating) {
-                item {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-            }
+            items(messages, key = { it.id }) { MessageBubble(it) }
+            if (generating) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
 
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
+            Modifier.fillMaxWidth().padding(10.dp),
             verticalAlignment = Alignment.Bottom
         ) {
             OutlinedTextField(
@@ -182,7 +200,6 @@ private fun ChatTab(vm: ChronicleViewModel) {
                 onValueChange = { input = it },
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("Continue the story…") },
-                minLines = 1,
                 maxLines = 5
             )
             Spacer(Modifier.width(8.dp))
@@ -208,8 +225,7 @@ private fun MessageBubble(message: MessageEntity) {
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
         Column(
-            Modifier
-                .fillMaxWidth(0.88f)
+            Modifier.fillMaxWidth(0.88f)
                 .background(
                     if (isUser) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceVariant,
@@ -235,18 +251,13 @@ private fun MemoryTab(vm: ChronicleViewModel) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
                 Text("Campaign Memory", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Only this campaign can see these facts.",
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text("Only this campaign can see these facts.", style = MaterialTheme.typography.bodySmall)
             }
             Button(onClick = { showAdd = true }) { Text("Add") }
         }
@@ -259,15 +270,10 @@ private fun MemoryTab(vm: ChronicleViewModel) {
             items(memories, key = { it.id }) { memory ->
                 ElevatedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
-                        Text(
-                            "${memory.category} • ${memory.title}",
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("${memory.category} • ${memory.title}", fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
                         Text(memory.content)
-                        TextButton(onClick = { vm.deleteMemory(memory) }) {
-                            Text("Remove")
-                        }
+                        TextButton(onClick = { vm.deleteMemory(memory) }) { Text("Remove") }
                     }
                 }
             }
@@ -292,9 +298,7 @@ private fun CharactersTab(vm: ChronicleViewModel) {
 
     Column(Modifier.fillMaxSize()) {
         Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -363,7 +367,9 @@ private fun CreateCampaignDialog(
                 Text("Create")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
     )
 }
 
@@ -392,7 +398,9 @@ private fun AddMemoryDialog(
                 enabled = title.isNotBlank() && content.isNotBlank()
             ) { Text("Save") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
     )
 }
 
@@ -420,6 +428,8 @@ private fun AddCharacterDialog(
                 Text("Save")
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
     )
 }

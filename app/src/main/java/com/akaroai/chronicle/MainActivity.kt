@@ -19,7 +19,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val vm: ChronicleViewModel = viewModel(
-                    factory = ChronicleViewModel.Factory(repository)
+                    factory = ChronicleViewModel.Factory(
+                        repository = repository,
+                        settingsStore = app.providerSettings
+                    )
                 )
                 ChronicleScreen(vm)
             }
