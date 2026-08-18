@@ -1,4 +1,4 @@
-name: Build Android APK
+name: Build Chronicle APK
 
 on:
   workflow_dispatch:
@@ -6,7 +6,10 @@ on:
     branches:
       - main
     paths:
-      - "ChatTranscriptExtractorAndroid/**"
+      - "app/**"
+      - "*.gradle"
+      - "gradle.properties"
+      - "settings.gradle"
       - ".github/workflows/build-apk.yml"
 
 jobs:
@@ -28,13 +31,12 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build APK
-        working-directory: ChatTranscriptExtractorAndroid
+      - name: Build Chronicle APK
         run: gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ChatTranscriptExtractor-APK
-          path: ChatTranscriptExtractorAndroid/app/build/outputs/apk/debug/app-debug.apk
+          name: Chronicle-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
