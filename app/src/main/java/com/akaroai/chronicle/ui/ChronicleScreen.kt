@@ -900,78 +900,206 @@ private fun ExternalImportReviewDialog(
     onDismiss: () -> Unit,
     onImport: (com.akaroai.chronicle.data.ExternalImportDraft) -> Unit
 ) {
+    var working by remember(draft) { mutableStateOf(draft) }
+    var filter by remember { mutableStateOf("All") }
+    var editCampaign by remember { mutableStateOf(false) }
+    var editingCharacterIndex by remember { mutableStateOf<Int?>(null) }
+    var editingMemoryIndex by remember { mutableStateOf<Int?>(null) }
+
+    val allConfidence = working.characters.map { it.confidence } + working.memories.map { it.confidence }
+    val highCount = allConfidence.count { it == "High confidence" }
+    val reviewCount = allConfidence.count { it == "Needs review" }
+    val ambiguousCount = allConfidence.count { it == "Ambiguous" }
+
+    fun visible(confidence: String): Boolean = when (filter) {
+        "Needs Review" -> confidence == "Needs review"
+        "Ambiguous" -> confidence == "Ambiguous"
+        else -> true
+    }
+
     BasicAlertDialog(onDismissRequest = onDismiss) {
         Surface(
-            Modifier.fillMaxWidth(.96f).fillMaxHeight(.92f),
+            Modifier.fillMaxWidth(.96f).fillMaxHeight(.94f),
             shape = RoundedCornerShape(24.dp)
         ) {
             Column(Modifier.fillMaxSize()) {
                 Column(Modifier.padding(18.dp)) {
-                    Text("Import Review", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        "Chronicle has not written any of this to canon yet. Review the extracted draft first.",
+                        "Import Review",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Nothing here becomes canon until you approve it. Edit or remove anything Chronicle misunderstood.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "${working.characters.size} Characters • ${working.memories.size} Memories • ${working.messages.size} Messages",
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "$highCount High confidence • $reviewCount Needs review • $ambiguousCount Ambiguous",
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
 
+                LazyRow(
+                    Modifier.fillMaxWidth().padding(horizontal = 18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(listOf("All", "Needs Review", "Ambiguous")) { option ->
+                        FilterChip(
+                            selected = filter == option,
+                            onClick = { filter = option },
+                            label = { Text(option) }
+                        )
+                    }
+                }
+
                 LazyColumn(
                     Modifier.weight(1f),
-                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     item {
                         ElevatedCard(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(14.dp)) {
-                                Text(draft.campaignName, fontWeight = FontWeight.Bold)
-                                if (draft.description.isNotBlank()) Text(draft.description)
-                                if (draft.setting.isNotBlank()) Text("Setting: ${draft.setting}")
-                                if (draft.currentLocation.isNotBlank()) Text("Current location: ${draft.currentLocation}")
-                                if (draft.currentObjective.isNotBlank()) Text("Objective: ${draft.currentObjective}")
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        working.campaignName,
+                                        fontWeight = FontWeight.Bold,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    TextButton(onClick = { editCampaign = true }) {
+                                        Icon(Icons.Default.Edit, null)
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("Edit")
+                                    }
+                                }
+                                if (working.description.isNotBlank()) Text(working.description)
+                                if (working.setting.isNotBlank()) Text("Setting: ${working.setting}")
+                                if (working.genreTone.isNotBlank()) Text("Tone: ${working.genreTone}")
+                                if (working.currentLocation.isNotBlank()) {
+                                    Text("Current location: ${working.currentLocation}")
+                                }
+                                if (working.currentObjective.isNotBlank()) {
+                                    Text("Objective: ${working.currentObjective}")
+                                }
                             }
                         }
                     }
 
                     item {
                         Text(
-                            "Characters (${draft.characters.size})",
+                            "Characters (${working.characters.size})",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    items(draft.characters) { c ->
-                        ElevatedCard(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(12.dp)) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(c.name, fontWeight = FontWeight.Bold)
-                                    Text(c.confidence, style = MaterialTheme.typography.labelSmall)
+
+                    itemsIndexed(working.characters) { index, c ->
+                        if (visible(c.confidence)) {
+                            ElevatedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(c.name, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                c.confidence,
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        IconButton(onClick = { editingCharacterIndex = index }) {
+                                            Icon(Icons.Default.Edit, "Edit character")
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                working = working.copy(
+                                                    characters = working.characters.filterIndexed { i, _ ->
+                                                        i != index
+                                                    }
+                                                )
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                "Remove character",
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        "${c.castTier}${if (c.species.isNotBlank()) " • ${c.species}" else ""}"
+                                    )
+                                    if (c.relationship.isNotBlank()) {
+                                        Text("Relationship: ${c.relationship}")
+                                    }
+                                    if (c.personality.isNotBlank()) {
+                                        Text(c.personality, maxLines = 3)
+                                    }
                                 }
-                                Text("${c.castTier}${if (c.species.isNotBlank()) " • ${c.species}" else ""}")
-                                if (c.personality.isNotBlank()) Text(c.personality, maxLines = 3)
                             }
                         }
                     }
 
                     item {
                         Text(
-                            "Memories / Lore (${draft.memories.size})",
+                            "Memories / Lore (${working.memories.size})",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    items(draft.memories) { m ->
-                        ElevatedCard(Modifier.fillMaxWidth()) {
-                            Column(Modifier.padding(12.dp)) {
-                                Row(
-                                    Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text("${m.category} • ${m.title}", fontWeight = FontWeight.Bold)
-                                    Text(m.confidence, style = MaterialTheme.typography.labelSmall)
+
+                    itemsIndexed(working.memories) { index, m ->
+                        if (visible(m.confidence)) {
+                            ElevatedCard(Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Row(
+                                        Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(
+                                                "${m.category} • ${m.title}",
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                m.confidence,
+                                                style = MaterialTheme.typography.labelSmall
+                                            )
+                                        }
+                                        IconButton(onClick = { editingMemoryIndex = index }) {
+                                            Icon(Icons.Default.Edit, "Edit memory")
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                working = working.copy(
+                                                    memories = working.memories.filterIndexed { i, _ ->
+                                                        i != index
+                                                    }
+                                                )
+                                            }
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                "Remove memory",
+                                                tint = MaterialTheme.colorScheme.error
+                                            )
+                                        }
+                                    }
+                                    Text(m.content, maxLines = 5)
                                 }
-                                Text(m.content, maxLines = 5)
                             }
                         }
                     }
@@ -981,10 +1109,10 @@ private fun ExternalImportReviewDialog(
                             Column(Modifier.padding(12.dp)) {
                                 Text("Transcript preservation", fontWeight = FontWeight.Bold)
                                 Text(
-                                    if (draft.messages.isNotEmpty())
-                                        "${draft.messages.size} speaker-prefixed chat messages detected and ready to restore into Chat."
+                                    if (working.messages.isNotEmpty())
+                                        "${working.messages.size} speaker-prefixed chat messages will be restored into Chat."
                                     else
-                                        "No reliable User:/Assistant:/GM: transcript structure detected. The original source will be preserved as an Imported Source memory instead."
+                                        "No reliable speaker structure was detected. The original source will be preserved as an Imported Source memory."
                                 )
                             }
                         }
@@ -993,14 +1121,285 @@ private fun ExternalImportReviewDialog(
 
                 Row(
                     Modifier.fillMaxWidth().padding(16.dp),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     TextButton(onClick = onDismiss) { Text("Cancel") }
-                    Button(onClick = { onImport(draft) }) {
+                    Button(
+                        onClick = { onImport(working) },
+                        enabled = working.campaignName.isNotBlank()
+                    ) {
                         Text("Approve & Create")
                     }
                 }
             }
         }
     }
+
+    if (editCampaign) {
+        ExternalCampaignDraftEditor(
+            draft = working,
+            onDismiss = { editCampaign = false },
+            onSave = {
+                working = it
+                editCampaign = false
+            }
+        )
+    }
+
+    editingCharacterIndex?.let { index ->
+        working.characters.getOrNull(index)?.let { character ->
+            ExternalCharacterDraftEditor(
+                character = character,
+                onDismiss = { editingCharacterIndex = null },
+                onSave = { updated ->
+                    working = working.copy(
+                        characters = working.characters.toMutableList().also {
+                            if (index in it.indices) it[index] = updated
+                        }
+                    )
+                    editingCharacterIndex = null
+                }
+            )
+        }
+    }
+
+    editingMemoryIndex?.let { index ->
+        working.memories.getOrNull(index)?.let { memory ->
+            ExternalMemoryDraftEditor(
+                memory = memory,
+                onDismiss = { editingMemoryIndex = null },
+                onSave = { updated ->
+                    working = working.copy(
+                        memories = working.memories.toMutableList().also {
+                            if (index in it.indices) it[index] = updated
+                        }
+                    )
+                    editingMemoryIndex = null
+                }
+            )
+        }
+    }
 }
+
+@Composable
+private fun ExternalCampaignDraftEditor(
+    draft: com.akaroai.chronicle.data.ExternalImportDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ExternalImportDraft) -> Unit
+) {
+    var name by remember(draft) { mutableStateOf(draft.campaignName) }
+    var description by remember(draft) { mutableStateOf(draft.description) }
+    var setting by remember(draft) { mutableStateOf(draft.setting) }
+    var tone by remember(draft) { mutableStateOf(draft.genreTone) }
+    var location by remember(draft) { mutableStateOf(draft.currentLocation) }
+    var objective by remember(draft) { mutableStateOf(draft.currentObjective) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit campaign draft") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Field("Campaign name", name) { name = it }
+                Field("Description", description, 2) { description = it }
+                Field("World / setting", setting, 2) { setting = it }
+                Field("Genre / tone", tone, 2) { tone = it }
+                Field("Current location", location) { location = it }
+                Field("Current objective", objective, 2) { objective = it }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    onSave(
+                        draft.copy(
+                            campaignName = name.trim(),
+                            description = description.trim(),
+                            setting = setting.trim(),
+                            genreTone = tone.trim(),
+                            currentLocation = location.trim(),
+                            currentObjective = objective.trim()
+                        )
+                    )
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExternalCharacterDraftEditor(
+    character: com.akaroai.chronicle.data.ImportedCharacterDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedCharacterDraft) -> Unit
+) {
+    var c by remember(character) { mutableStateOf(character) }
+    var tierMenu by remember { mutableStateOf(false) }
+    var confidenceMenu by remember { mutableStateOf(false) }
+
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            Modifier.fillMaxWidth(.96f).fillMaxHeight(.92f),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Text(
+                    "Edit imported character",
+                    Modifier.padding(18.dp),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Column(
+                    Modifier.weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 18.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box {
+                            OutlinedButton(onClick = { tierMenu = true }) {
+                                Text("Cast: ${c.castTier}")
+                            }
+                            DropdownMenu(
+                                expanded = tierMenu,
+                                onDismissRequest = { tierMenu = false }
+                            ) {
+                                listOf("Main", "Secondary", "Supporting", "Background").forEach { tier ->
+                                    DropdownMenuItem(
+                                        text = { Text(tier) },
+                                        onClick = {
+                                            c = c.copy(castTier = tier)
+                                            tierMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        Box {
+                            OutlinedButton(onClick = { confidenceMenu = true }) {
+                                Text(c.confidence)
+                            }
+                            DropdownMenu(
+                                expanded = confidenceMenu,
+                                onDismissRequest = { confidenceMenu = false }
+                            ) {
+                                listOf("High confidence", "Needs review", "Ambiguous").forEach { value ->
+                                    DropdownMenuItem(
+                                        text = { Text(value) },
+                                        onClick = {
+                                            c = c.copy(confidence = value)
+                                            confidenceMenu = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Field("Name", c.name) { c = c.copy(name = it) }
+                    Field("Species / race", c.species) { c = c.copy(species = it) }
+                    Field("Age", c.age) { c = c.copy(age = it) }
+                    Field("Pronouns", c.pronouns) { c = c.copy(pronouns = it) }
+                    Field("Status", c.status) { c = c.copy(status = it) }
+                    Field("Appearance", c.appearance, 3) { c = c.copy(appearance = it) }
+                    Field("Personality", c.personality, 3) { c = c.copy(personality = it) }
+                    Field("Backstory", c.backstory, 4) { c = c.copy(backstory = it) }
+                    Field("Abilities / powers", c.abilities, 3) { c = c.copy(abilities = it) }
+                    Field("Equipment", c.equipment, 3) { c = c.copy(equipment = it) }
+                    Field("Relationship", c.relationship, 3) { c = c.copy(relationship = it) }
+                    Field("Affiliations", c.affiliations, 2) { c = c.copy(affiliations = it) }
+                    Field("Goals / motivations", c.goals, 3) { c = c.copy(goals = it) }
+                    Field("Fears / vulnerabilities", c.fears, 3) { c = c.copy(fears = it) }
+                    Field("Secrets", c.secrets, 3) { c = c.copy(secrets = it) }
+                    Field("Injuries / conditions", c.injuries, 3) { c = c.copy(injuries = it) }
+                    Field("Notes", c.notes, 3) { c = c.copy(notes = it) }
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Button(
+                        onClick = { onSave(c.copy(name = c.name.trim())) },
+                        enabled = c.name.isNotBlank()
+                    ) { Text("Save character") }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExternalMemoryDraftEditor(
+    memory: com.akaroai.chronicle.data.ImportedMemoryDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedMemoryDraft) -> Unit
+) {
+    var m by remember(memory) { mutableStateOf(memory) }
+    var confidenceMenu by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit imported memory") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Field("Category", m.category) { m = m.copy(category = it) }
+                Field("Title", m.title) { m = m.copy(title = it) }
+                Field("Content", m.content, 5) { m = m.copy(content = it) }
+
+                Box {
+                    OutlinedButton(onClick = { confidenceMenu = true }) {
+                        Text("Confidence: ${m.confidence}")
+                    }
+                    DropdownMenu(
+                        expanded = confidenceMenu,
+                        onDismissRequest = { confidenceMenu = false }
+                    ) {
+                        listOf("High confidence", "Needs review", "Ambiguous").forEach { value ->
+                            DropdownMenuItem(
+                                text = { Text(value) },
+                                onClick = {
+                                    m = m.copy(confidence = value)
+                                    confidenceMenu = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = m.title.isNotBlank() && m.content.isNotBlank(),
+                onClick = {
+                    onSave(
+                        m.copy(
+                            category = m.category.trim().ifBlank { "Canon" },
+                            title = m.title.trim(),
+                            content = m.content.trim()
+                        )
+                    )
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
