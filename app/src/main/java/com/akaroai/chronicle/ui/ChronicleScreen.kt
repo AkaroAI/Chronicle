@@ -1,5 +1,8 @@
 package com.akaroai.chronicle.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.akaroai.chronicle.model.*
@@ -32,7 +36,9 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val selected by vm.selectedCampaign.collectAsState()
     val ps by vm.providerSettings.collectAsState()
     val error by vm.lastError.collectAsState()
+    val notice by vm.notice.collectAsState()
     val proposals by vm.pendingProposals.collectAsState()
+    val context = LocalContext.current
 
     var tab by remember { mutableStateOf(ChronicleTab.CHAT) }
     var create by remember { mutableStateOf(false) }
@@ -40,13 +46,32 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     var editCampaign by remember { mutableStateOf(false) }
     var archiveDlg by remember { mutableStateOf(false) }
     var deleteDlg by remember { mutableStateOf(false) }
+    var importChoice by remember { mutableStateOf<Uri?>(null) }
     var menu by remember { mutableStateOf(false) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        if (uri != null) vm.exportSelectedCampaign(context, uri)
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) importChoice = uri
+    }
 
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(error) {
         error?.let {
             snack.showSnackbar(it)
             vm.clearError()
+        }
+    }
+    LaunchedEffect(notice) {
+        notice?.let {
+            snack.showSnackbar(it)
+            vm.clearNotice()
         }
     }
 
@@ -78,6 +103,32 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                         ) {
                             if (selected != null) {
                                 DropdownMenuItem(
+                                    text = { Text("Export campaign") },
+                                    onClick = {
+                                        menu = false
+                                        val safeName = selected?.name
+                                            ?.replace(Regex("[^A-Za-z0-9._-]+"), "_")
+                                            ?.trim('_')
+                                            ?.ifBlank { "Chronicle_Campaign" }
+                                            ?: "Chronicle_Campaign"
+                                        exportLauncher.launch("$safeName.chronicle")
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.FileUpload, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Import campaign backup") },
+                                    onClick = {
+                                        menu = false
+                                        importLauncher.launch(arrayOf(
+                                            "application/zip",
+                                            "application/octet-stream",
+                                            "*/*"
+                                        ))
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.FileDownload, null) }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
                                     text = { Text("Edit campaign") },
                                     onClick = { menu = false; editCampaign = true },
                                     leadingIcon = { Icon(Icons.Default.Edit, null) }
@@ -94,6 +145,19 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                                     text = { Text("Delete campaign") },
                                     onClick = { menu = false; deleteDlg = true },
                                     leadingIcon = { Icon(Icons.Default.Delete, null) }
+                                )
+                            } else {
+                                DropdownMenuItem(
+                                    text = { Text("Import campaign backup") },
+                                    onClick = {
+                                        menu = false
+                                        importLauncher.launch(arrayOf(
+                                            "application/zip",
+                                            "application/octet-stream",
+                                            "*/*"
+                                        ))
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.FileDownload, null) }
                                 )
                             }
                             if (archived.isNotEmpty()) {
@@ -175,7 +239,25 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
 
             if (selected == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Button(onClick = { create = true }) { Text("Create campaign") }
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(onClick = { create = true }) { Text("Create campaign") }
+                        OutlinedButton(
+                            onClick = {
+                                importLauncher.launch(arrayOf(
+                                    "application/zip",
+                                    "application/octet-stream",
+                                    "*/*"
+                                ))
+                            }
+                        ) {
+                            Icon(Icons.Default.FileDownload, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Import .chronicle")
+                        }
+                    }
                 }
             } else {
                 when (tab) {
@@ -200,6 +282,45 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
             vm.saveProviderSettings(it)
             provider = false
         }
+    }
+
+    importChoice?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { importChoice = null },
+            title = { Text("Import Chronicle campaign") },
+            text = {
+                Text(
+                    if (selected != null) {
+                        "Import this backup as a separate campaign, or replace the currently selected campaign '${selected?.name}'. Replace only happens after the backup is successfully read."
+                    } else {
+                        "Import this backup as a new campaign."
+                    }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    vm.importCampaign(context, uri, replaceCurrent = false)
+                    importChoice = null
+                }) {
+                    Text("Import as copy")
+                }
+            },
+            dismissButton = {
+                Row {
+                    if (selected != null) {
+                        TextButton(onClick = {
+                            vm.importCampaign(context, uri, replaceCurrent = true)
+                            importChoice = null
+                        }) {
+                            Text("Replace current")
+                        }
+                    }
+                    TextButton(onClick = { importChoice = null }) {
+                        Text("Cancel")
+                    }
+                }
+            }
+        )
     }
 
     selected?.let { c ->
@@ -369,67 +490,60 @@ private fun CharactersTab(vm: ChronicleViewModel) {
     var adding by remember { mutableStateOf(false) }
 
     Column(
-    Modifier.fillMaxWidth().padding(12.dp),
-    verticalArrangement = Arrangement.spacedBy(10.dp)
-) {
-    Text(
-        "Characters",
-        style = MaterialTheme.typography.titleMedium
-    )
-
-    Text(
-        "Cast tier controls how aggressively Chronicle tracks each character.",
-        style = MaterialTheme.typography.bodySmall
-    )
-
-    Button(
-        onClick = { adding = true }
+        Modifier.fillMaxWidth().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Icon(Icons.Default.Add, contentDescription = null)
-        Spacer(Modifier.width(6.dp))
-        Text("Add Character")
+        Text("Characters", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Cast tier controls how aggressively Chronicle tracks each character.",
+            style = MaterialTheme.typography.bodySmall
+        )
+        Button(onClick = { adding = true }) {
+            Icon(Icons.Default.Add, contentDescription = null)
+            Spacer(Modifier.width(6.dp))
+            Text("Add Character")
+        }
     }
-}
 
-        LazyColumn(
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(chars, key = { it.id }) { c ->
-                ElevatedCard(
-                    Modifier.fillMaxWidth().clickable { editing = c }
-                ) {
-                    Column(Modifier.padding(14.dp)) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                c.name,
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            AssistChip(onClick = {}, label = { Text(c.castTier) })
-                        }
+    LazyColumn(
+        contentPadding = PaddingValues(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(chars, key = { it.id }) { c ->
+            ElevatedCard(
+                Modifier.fillMaxWidth().clickable { editing = c }
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            c.name,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        AssistChip(onClick = {}, label = { Text(c.castTier) })
+                    }
 
-                        if (c.species.isNotBlank() || c.age.isNotBlank()) {
-                            Text(
-                                listOf(c.species, c.age)
-                                    .filter { it.isNotBlank() }
-                                    .joinToString(" • ")
-                            )
-                        }
-                        if (c.relationship.isNotBlank()) {
-                            Text("Relationship: ${c.relationship}")
-                        }
-                        if (c.personality.isNotBlank()) {
-                            Text(c.personality, maxLines = 2)
-                        }
+                    if (c.species.isNotBlank() || c.age.isNotBlank()) {
+                        Text(
+                            listOf(c.species, c.age)
+                                .filter { it.isNotBlank() }
+                                .joinToString(" • ")
+                        )
+                    }
+                    if (c.relationship.isNotBlank()) {
+                        Text("Relationship: ${c.relationship}")
+                    }
+                    if (c.personality.isNotBlank()) {
+                        Text(c.personality, maxLines = 2)
                     }
                 }
             }
         }
+    }
 
     if (adding) {
         campaign?.let {

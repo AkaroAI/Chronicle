@@ -27,11 +27,17 @@ interface ChronicleDao {
     @Query("SELECT * FROM messages WHERE campaignId = :campaignId ORDER BY createdAt ASC, id ASC")
     fun messages(campaignId: Long): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages WHERE campaignId = :campaignId ORDER BY createdAt ASC, id ASC")
+    suspend fun messagesSnapshot(campaignId: Long): List<MessageEntity>
+
     @Insert
     suspend fun insertMessage(message: MessageEntity): Long
 
     @Query("SELECT * FROM memories WHERE campaignId = :campaignId ORDER BY pinned DESC, createdAt DESC")
     fun memories(campaignId: Long): Flow<List<MemoryEntity>>
+
+    @Query("SELECT * FROM memories WHERE campaignId = :campaignId ORDER BY createdAt ASC, id ASC")
+    suspend fun memoriesSnapshot(campaignId: Long): List<MemoryEntity>
 
     @Insert
     suspend fun insertMemory(memory: MemoryEntity): Long
@@ -41,6 +47,9 @@ interface ChronicleDao {
 
     @Query("SELECT * FROM characters WHERE campaignId = :campaignId ORDER BY name COLLATE NOCASE ASC")
     fun characters(campaignId: Long): Flow<List<CharacterEntity>>
+
+    @Query("SELECT * FROM characters WHERE campaignId = :campaignId ORDER BY id ASC")
+    suspend fun charactersSnapshot(campaignId: Long): List<CharacterEntity>
 
     @Query("SELECT * FROM characters WHERE id = :id LIMIT 1")
     suspend fun characterById(id: Long): CharacterEntity?
@@ -61,6 +70,9 @@ interface ChronicleDao {
             "WHEN 'Critical' THEN 0 WHEN 'High' THEN 1 WHEN 'Normal' THEN 2 ELSE 3 END, createdAt DESC"
     )
     fun pendingProposals(campaignId: Long): Flow<List<ChangeProposalEntity>>
+
+    @Query("SELECT * FROM change_proposals WHERE campaignId = :campaignId ORDER BY createdAt ASC, id ASC")
+    suspend fun proposalsSnapshot(campaignId: Long): List<ChangeProposalEntity>
 
     @Query(
         "SELECT * FROM change_proposals " +

@@ -1,13 +1,17 @@
 package com.akaroai.chronicle.ui
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class ChronicleViewModel(
     private val repository: ChronicleRepository,
@@ -54,6 +58,9 @@ class ChronicleViewModel(
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError = _lastError.asStateFlow()
 
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice = _notice.asStateFlow()
+
     init {
         viewModelScope.launch {
             campaigns.collect { list ->
@@ -65,6 +72,7 @@ class ChronicleViewModel(
     }
 
     fun clearError() { _lastError.value = null }
+    fun clearNotice() { _notice.value = null }
 
     fun saveProviderSettings(s: ProviderSettings) {
         settingsStore.save(s)
@@ -95,6 +103,48 @@ class ChronicleViewModel(
             repository.deleteCampaign(c)
             if (selectedId.value == c.id) selectedId.value = null
         }
+
+    fun exportSelectedCampaign(context: Context, uri: Uri) {
+        val campaign = selectedCampaign.value ?: return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val stream = context.contentResolver.openOutputStream(uri)
+                        ?: error("Could not open the selected save location.")
+                    stream.use { repository.exportCampaign(campaign.id, it) }
+                }
+                _notice.value = "${campaign.name} exported successfully."
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Campaign export failed."
+            }
+        }
+    }
+
+    fun importCampaign(context: Context, uri: Uri, replaceCurrent: Boolean) {
+        val current = selectedCampaign.value
+        viewModelScope.launch {
+            try {
+                val importedId = withContext(Dispatchers.IO) {
+                    val stream = context.contentResolver.openInputStream(uri)
+                        ?: error("Could not open that Chronicle file.")
+                    stream.use {
+                        repository.importCampaign(
+                            it,
+                            if (replaceCurrent) current else null
+                        )
+                    }
+                }
+                selectedId.value = importedId
+                _notice.value = if (replaceCurrent && current != null) {
+                    "Campaign restored from backup."
+                } else {
+                    "Campaign imported as a new copy."
+                }
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Campaign import failed."
+            }
+        }
+    }
 
     fun addMemory(t: String, c: String, cat: String = "Canon") {
         val id = selectedCampaign.value?.id ?: return
@@ -197,13 +247,7 @@ class ChronicleViewModel(
                     _providerSettings.value.enabled &&
                     _providerSettings.value.autoReviewEnabled
                 ) {
-                    scanForProposals(
-                        campaign,
-                        context,
-                        text,
-                        reply,
-                        provider
-                    )
+                    scanForProposals(campaign, context, text, reply, provider)
                 }
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
