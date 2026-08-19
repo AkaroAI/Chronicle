@@ -368,20 +368,28 @@ private fun CharactersTab(vm: ChronicleViewModel) {
     var editing by remember { mutableStateOf<CharacterEntity?>(null) }
     var adding by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column {
-                Text("Characters", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Cast tier controls how aggressively Chronicle tracks each character.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            Button(onClick = { adding = true }) { Text("Add") }
-        }
+    Column(
+    Modifier.fillMaxWidth().padding(12.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+) {
+    Text(
+        "Characters",
+        style = MaterialTheme.typography.titleMedium
+    )
+
+    Text(
+        "Cast tier controls how aggressively Chronicle tracks each character.",
+        style = MaterialTheme.typography.bodySmall
+    )
+
+    Button(
+        onClick = { adding = true }
+    ) {
+        Icon(Icons.Default.Add, contentDescription = null)
+        Spacer(Modifier.width(6.dp))
+        Text("Add Character")
+    }
+}
 
         LazyColumn(
             contentPadding = PaddingValues(12.dp),
