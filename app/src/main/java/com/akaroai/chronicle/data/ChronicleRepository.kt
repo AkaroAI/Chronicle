@@ -14,6 +14,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     fun memories(id: Long) = dao.memories(id)
     fun characters(id: Long) = dao.characters(id)
     fun pendingProposals(id: Long) = dao.pendingProposals(id)
+    fun locations(id: Long) = dao.locations(id)
+    fun factions(id: Long) = dao.factions(id)
+    fun quests(id: Long) = dao.quests(id)
+    fun timelineEvents(id: Long) = dao.timelineEvents(id)
+
 
     suspend fun createCampaign(name: String, description: String = "") =
         dao.insertCampaign(CampaignEntity(name = name.trim(), description = description.trim()))
@@ -64,7 +69,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 messages = dao.messagesSnapshot(campaignId),
                 memories = dao.memoriesSnapshot(campaignId),
                 characters = dao.charactersSnapshot(campaignId),
-                proposals = dao.proposalsSnapshot(campaignId)
+                proposals = dao.proposalsSnapshot(campaignId),
+                locations = dao.locationsSnapshot(campaignId),
+                factions = dao.factionsSnapshot(campaignId),
+                quests = dao.questsSnapshot(campaignId),
+                timelineEvents = dao.timelineSnapshot(campaignId)
             ),
             output
         )
@@ -104,6 +113,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             dao.insertMessage(old.copy(id = 0, campaignId = importedId))
         }
 
+        backup.locations.forEach { dao.insertLocation(it.copy(id = 0, campaignId = importedId)) }
+        backup.factions.forEach { dao.insertFaction(it.copy(id = 0, campaignId = importedId)) }
+        backup.quests.forEach { dao.insertQuest(it.copy(id = 0, campaignId = importedId)) }
+        backup.timelineEvents.forEach { dao.insertTimelineEvent(it.copy(id = 0, campaignId = importedId)) }
+
         val proposalIdMap = mutableMapOf<Long, Long>()
         backup.proposals.forEach { old ->
             val mappedTarget = old.targetId?.let { characterIdMap[it] ?: it }
@@ -139,12 +153,76 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         return importedId
     }
 
-    suspend fun addProposal(proposal: ChangeProposalEntity) {
-        val oldPending = dao.pendingForTarget(
-            proposal.campaignId,
-            proposal.targetType,
-            proposal.targetId
+    suspend fun addTimelineEvent(event: TimelineEventEntity) {
+        val current = dao.timelineSnapshot(event.campaignId)
+        val order = if (event.storyOrder > 0) event.storyOrder else ((current.maxOfOrNull { it.storyOrder } ?: 0L) + 1L)
+        dao.insertTimelineEvent(event.copy(storyOrder = order))
+        dao.touchCampaign(event.campaignId)
+    }
+
+    suspend fun deleteTimelineEvent(event: TimelineEventEntity) = dao.deleteTimelineEvent(event)
+
+    private suspend fun upsertLocation(campaignId: Long, changes: JSONObject) {
+        val name = changes.optString("name").trim()
+        if (name.isBlank()) error("Location needs a name.")
+        val old = dao.locationsSnapshot(campaignId).firstOrNull { it.name.equals(name, true) }
+        val next = (old ?: LocationEntity(campaignId = campaignId, name = name)).copy(
+            region = changes.optString("region", old?.region ?: ""),
+            parentLocation = changes.optString("parentLocation", old?.parentLocation ?: ""),
+            description = changes.optString("description", old?.description ?: ""),
+            discoveryState = changes.optString("discoveryState", old?.discoveryState ?: "Discovered"),
+            status = changes.optString("status", old?.status ?: "Active"),
+            notes = changes.optString("notes", old?.notes ?: ""),
+            updatedAt = System.currentTimeMillis()
         )
+        if (old == null) dao.insertLocation(next) else dao.updateLocation(next)
+    }
+
+    private suspend fun upsertFaction(campaignId: Long, changes: JSONObject) {
+        val name = changes.optString("name").trim()
+        if (name.isBlank()) error("Faction needs a name.")
+        val old = dao.factionsSnapshot(campaignId).firstOrNull { it.name.equals(name, true) }
+        val next = (old ?: FactionEntity(campaignId = campaignId, name = name)).copy(
+            description = changes.optString("description", old?.description ?: ""),
+            alignment = changes.optString("alignment", old?.alignment ?: ""),
+            relationshipToParty = changes.optString("relationshipToParty", old?.relationshipToParty ?: "Unknown"),
+            status = changes.optString("status", old?.status ?: "Active"),
+            goals = changes.optString("goals", old?.goals ?: ""),
+            notes = changes.optString("notes", old?.notes ?: ""),
+            updatedAt = System.currentTimeMillis()
+        )
+        if (old == null) dao.insertFaction(next) else dao.updateFaction(next)
+    }
+
+    private suspend fun upsertQuest(campaignId: Long, changes: JSONObject) {
+        val title = changes.optString("title").trim()
+        if (title.isBlank()) error("Quest needs a title.")
+        val old = dao.questsSnapshot(campaignId).firstOrNull { it.title.equals(title, true) }
+        val next = (old ?: QuestEntity(campaignId = campaignId, title = title)).copy(
+            summary = changes.optString("summary", old?.summary ?: ""),
+            status = changes.optString("status", old?.status ?: "Active"),
+            objective = changes.optString("objective", old?.objective ?: ""),
+            relatedLocation = changes.optString("relatedLocation", old?.relatedLocation ?: ""),
+            relatedFaction = changes.optString("relatedFaction", old?.relatedFaction ?: ""),
+            importance = changes.optString("importance", old?.importance ?: "Normal"),
+            notes = changes.optString("notes", old?.notes ?: ""),
+            updatedAt = System.currentTimeMillis()
+        )
+        if (old == null) dao.insertQuest(next) else dao.updateQuest(next)
+    }
+
+    suspend fun addProposal(proposal: ChangeProposalEntity) {
+        val oldPending = if (proposal.targetType in setOf(
+                "location_upsert", "faction_upsert", "quest_upsert", "timeline_event_new"
+            )) {
+            emptyList()
+        } else {
+            dao.pendingForTarget(
+                proposal.campaignId,
+                proposal.targetType,
+                proposal.targetId
+            )
+        }
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
 
         var guarded = proposal
@@ -331,6 +409,49 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                     error("Invalid cast tier.")
                 }
                 updateCharacter(current.copy(castTier = tier))
+            }
+
+            "location_upsert" -> {
+                if (evidence == "Assistant Only" || evidence == "Unverified") {
+                    error("World-state changes need Player Confirmed or Story Event evidence before becoming canon.")
+                }
+                upsertLocation(proposal.campaignId, changes)
+            }
+
+            "faction_upsert" -> {
+                if (evidence == "Assistant Only" || evidence == "Unverified") {
+                    error("Faction changes need Player Confirmed or Story Event evidence before becoming canon.")
+                }
+                upsertFaction(proposal.campaignId, changes)
+            }
+
+            "quest_upsert" -> {
+                if (evidence == "Assistant Only" || evidence == "Unverified") {
+                    error("Quest changes need Player Confirmed or Story Event evidence before becoming canon.")
+                }
+                upsertQuest(proposal.campaignId, changes)
+            }
+
+            "timeline_event_new" -> {
+                if (evidence == "Assistant Only" || evidence == "Unverified") {
+                    error("Timeline events need Player Confirmed or Story Event evidence before becoming canon.")
+                }
+                val title = changes.optString("title").trim()
+                val summary = changes.optString("summary").trim()
+                if (title.isBlank() || summary.isBlank()) error("Timeline event needs a title and summary.")
+                addTimelineEvent(
+                    TimelineEventEntity(
+                        campaignId = proposal.campaignId,
+                        title = title,
+                        summary = summary,
+                        eventType = changes.optString("eventType", "Event"),
+                        location = changes.optString("location"),
+                        involvedCharacters = changes.optString("involvedCharacters"),
+                        storyArc = changes.optString("storyArc"),
+                        importance = changes.optString("importance", proposal.priority),
+                        source = evidence
+                    )
+                )
             }
 
             "campaign_update" -> {

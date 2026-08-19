@@ -48,6 +48,22 @@ class ChronicleViewModel(
         .flatMapLatest { repository.pendingProposals(it.id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    val locations = selectedCampaign.filterNotNull()
+        .flatMapLatest { repository.locations(it.id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val factions = selectedCampaign.filterNotNull()
+        .flatMapLatest { repository.factions(it.id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val quests = selectedCampaign.filterNotNull()
+        .flatMapLatest { repository.quests(it.id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val timelineEvents = selectedCampaign.filterNotNull()
+        .flatMapLatest { repository.timelineEvents(it.id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     private val _providerSettings = MutableStateFlow(settingsStore.load())
     val providerSettings = _providerSettings.asStateFlow()
 
@@ -417,7 +433,7 @@ class ChronicleViewModel(
                 - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
 
                 EVIDENCE TYPE
-                Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact.
+                Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact. If the user supplies the fact and the assistant only reformats or repeats it, it is Player Confirmed, NOT Assistant Only.
                 Story Event = a resolved event/consequence actually occurred in the exchange.
                 Assistant Only = introduced only by the storyteller/AI without user confirmation.
                 Unverified = source is unclear or conflicting.
@@ -491,6 +507,22 @@ class ChronicleViewModel(
 
                 cast_tier_update
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
+
+                WORLD STATE TARGETS
+
+                location_upsert
+                changes={"name":"...","region":"...","parentLocation":"...","description":"...","discoveryState":"Unknown|Heard About|Discovered|Visited","status":"Active|Changed|Destroyed|Inaccessible","notes":"..."}
+                Use only for locations that matter to continuity. Prefer Story Event when the party actually discovers/visits/changes it.
+
+                faction_upsert
+                changes={"name":"...","description":"...","alignment":"...","relationshipToParty":"Unknown|Friendly|Neutral|Hostile|Allied","status":"Active|Defeated|Disbanded|Unknown","goals":"...","notes":"..."}
+
+                quest_upsert
+                changes={"title":"...","summary":"...","status":"Active|Paused|Completed|Failed","objective":"...","relatedLocation":"...","relatedFaction":"...","importance":"Critical|High|Normal|Low","notes":"..."}
+
+                timeline_event_new
+                changes={"title":"...","summary":"...","eventType":"Discovery|Battle|Decision|Relationship|Quest|World Change|Character Change|Other","location":"...","involvedCharacters":"comma-separated names","storyArc":"...","importance":"Critical|High|Normal|Low"}
+                Timeline events are for meaningful story beats only. Do not create one for routine dialogue or minor flavor.
 
                 EVERY OBJECT:
                 {
@@ -569,6 +601,21 @@ class ChronicleViewModel(
         if (campaign.genreTone.isNotBlank()) appendLine("Genre/Tone: ${campaign.genreTone}")
         if (campaign.currentLocation.isNotBlank()) appendLine("Current location: ${campaign.currentLocation}")
         if (campaign.currentObjective.isNotBlank()) appendLine("Current objective: ${campaign.currentObjective}")
+
+        appendLine("WORLD STATE:")
+        locations.value.forEach { l ->
+            appendLine("LOCATION | ${l.name} | region=${l.region} | parent=${l.parentLocation} | discovery=${l.discoveryState} | status=${l.status} | ${l.description}")
+        }
+        factions.value.forEach { f ->
+            appendLine("FACTION | ${f.name} | relationship=${f.relationshipToParty} | status=${f.status} | goals=${f.goals} | ${f.description}")
+        }
+        quests.value.forEach { q ->
+            appendLine("QUEST | ${q.title} | status=${q.status} | importance=${q.importance} | objective=${q.objective} | location=${q.relatedLocation} | faction=${q.relatedFaction}")
+        }
+        timelineEvents.value.take(30).reversed().forEach { e ->
+            appendLine("TIMELINE | ${e.title} | ${e.eventType} | importance=${e.importance} | location=${e.location} | ${e.summary}")
+        }
+        appendLine()
 
         if (memories.value.isNotEmpty()) {
             appendLine("MEMORIES:")

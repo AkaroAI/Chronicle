@@ -14,9 +14,13 @@ import com.akaroai.chronicle.model.*
         MessageEntity::class,
         MemoryEntity::class,
         CharacterEntity::class,
-        ChangeProposalEntity::class
+        ChangeProposalEntity::class,
+        LocationEntity::class,
+        FactionEntity::class,
+        QuestEntity::class,
+        TimelineEventEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class ChronicleDatabase : RoomDatabase() {
@@ -86,6 +90,25 @@ abstract class ChronicleDatabase : RoomDatabase() {
             }
         }
 
+
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS locations (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, campaignId INTEGER NOT NULL, name TEXT NOT NULL, region TEXT NOT NULL DEFAULT '', parentLocation TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', discoveryState TEXT NOT NULL DEFAULT 'Discovered', status TEXT NOT NULL DEFAULT 'Active', notes TEXT NOT NULL DEFAULT '', firstSeenAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, FOREIGN KEY(campaignId) REFERENCES campaigns(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_locations_campaignId ON locations(campaignId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_locations_name ON locations(name)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS factions (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, campaignId INTEGER NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', alignment TEXT NOT NULL DEFAULT '', relationshipToParty TEXT NOT NULL DEFAULT 'Unknown', status TEXT NOT NULL DEFAULT 'Active', goals TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, FOREIGN KEY(campaignId) REFERENCES campaigns(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_factions_campaignId ON factions(campaignId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_factions_name ON factions(name)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS quests (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, campaignId INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'Active', objective TEXT NOT NULL DEFAULT '', relatedLocation TEXT NOT NULL DEFAULT '', relatedFaction TEXT NOT NULL DEFAULT '', importance TEXT NOT NULL DEFAULT 'Normal', notes TEXT NOT NULL DEFAULT '', createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, FOREIGN KEY(campaignId) REFERENCES campaigns(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_quests_campaignId ON quests(campaignId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_quests_status ON quests(status)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS timeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, campaignId INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, eventType TEXT NOT NULL DEFAULT 'Event', location TEXT NOT NULL DEFAULT '', involvedCharacters TEXT NOT NULL DEFAULT '', storyArc TEXT NOT NULL DEFAULT '', importance TEXT NOT NULL DEFAULT 'Normal', source TEXT NOT NULL DEFAULT 'Review', storyOrder INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL, FOREIGN KEY(campaignId) REFERENCES campaigns(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_timeline_events_campaignId ON timeline_events(campaignId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_timeline_events_storyOrder ON timeline_events(storyOrder)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_timeline_events_importance ON timeline_events(importance)")
+            }
+        }
+
         fun get(context: Context): ChronicleDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -93,7 +116,7 @@ abstract class ChronicleDatabase : RoomDatabase() {
                     ChronicleDatabase::class.java,
                     "chronicle.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build()
                     .also { INSTANCE = it }
             }

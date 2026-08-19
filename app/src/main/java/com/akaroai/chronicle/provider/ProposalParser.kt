@@ -58,7 +58,11 @@ object ProposalParser {
                     "character_new",
                     "character_update",
                     "campaign_update",
-                    "cast_tier_update"
+                    "cast_tier_update",
+                    "location_upsert",
+                    "faction_upsert",
+                    "quest_upsert",
+                    "timeline_event_new"
                 ) &&
                 changes.length() > 0
             ) {
@@ -123,7 +127,9 @@ object ProposalParser {
     private fun defaultGroup(targetType: String): String =
         when (targetType) {
             "character_new", "character_update", "cast_tier_update" -> "Characters"
-            "campaign_update" -> "World"
+            "campaign_update", "location_upsert", "faction_upsert" -> "World"
+            "quest_upsert" -> "Quests"
+            "timeline_event_new" -> "Events"
             "memory_new" -> "Lore"
             else -> "Other"
         }

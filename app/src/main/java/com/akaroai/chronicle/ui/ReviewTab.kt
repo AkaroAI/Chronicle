@@ -401,5 +401,9 @@ private fun targetLabel(proposal: ChangeProposalEntity): String =
         "character_update" -> "Character sheet • ID ${proposal.targetId ?: "?"}"
         "cast_tier_update" -> "Cast importance • ID ${proposal.targetId ?: "?"}"
         "campaign_update" -> "Campaign details"
+        "location_upsert" -> "World location"
+        "faction_upsert" -> "World faction"
+        "quest_upsert" -> "Quest / story thread"
+        "timeline_event_new" -> "Story timeline event"
         else -> proposal.targetType
     }

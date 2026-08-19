@@ -92,6 +92,38 @@ interface ChronicleDao {
     @Update
     suspend fun updateProposal(proposal: ChangeProposalEntity)
 
+
+    @Query("SELECT * FROM locations WHERE campaignId = :campaignId ORDER BY region COLLATE NOCASE, name COLLATE NOCASE")
+    fun locations(campaignId: Long): Flow<List<LocationEntity>>
+    @Query("SELECT * FROM locations WHERE campaignId = :campaignId ORDER BY id ASC")
+    suspend fun locationsSnapshot(campaignId: Long): List<LocationEntity>
+    @Insert suspend fun insertLocation(item: LocationEntity): Long
+    @Update suspend fun updateLocation(item: LocationEntity)
+    @Delete suspend fun deleteLocation(item: LocationEntity)
+
+    @Query("SELECT * FROM factions WHERE campaignId = :campaignId ORDER BY name COLLATE NOCASE")
+    fun factions(campaignId: Long): Flow<List<FactionEntity>>
+    @Query("SELECT * FROM factions WHERE campaignId = :campaignId ORDER BY id ASC")
+    suspend fun factionsSnapshot(campaignId: Long): List<FactionEntity>
+    @Insert suspend fun insertFaction(item: FactionEntity): Long
+    @Update suspend fun updateFaction(item: FactionEntity)
+    @Delete suspend fun deleteFaction(item: FactionEntity)
+
+    @Query("SELECT * FROM quests WHERE campaignId = :campaignId ORDER BY CASE status WHEN 'Active' THEN 0 WHEN 'Paused' THEN 1 WHEN 'Completed' THEN 2 ELSE 3 END, updatedAt DESC")
+    fun quests(campaignId: Long): Flow<List<QuestEntity>>
+    @Query("SELECT * FROM quests WHERE campaignId = :campaignId ORDER BY id ASC")
+    suspend fun questsSnapshot(campaignId: Long): List<QuestEntity>
+    @Insert suspend fun insertQuest(item: QuestEntity): Long
+    @Update suspend fun updateQuest(item: QuestEntity)
+    @Delete suspend fun deleteQuest(item: QuestEntity)
+
+    @Query("SELECT * FROM timeline_events WHERE campaignId = :campaignId ORDER BY storyOrder DESC, createdAt DESC, id DESC")
+    fun timelineEvents(campaignId: Long): Flow<List<TimelineEventEntity>>
+    @Query("SELECT * FROM timeline_events WHERE campaignId = :campaignId ORDER BY storyOrder ASC, createdAt ASC, id ASC")
+    suspend fun timelineSnapshot(campaignId: Long): List<TimelineEventEntity>
+    @Insert suspend fun insertTimelineEvent(item: TimelineEventEntity): Long
+    @Delete suspend fun deleteTimelineEvent(item: TimelineEventEntity)
+
     @Query("UPDATE campaigns SET updatedAt = :whenUpdated WHERE id = :campaignId")
     suspend fun touchCampaign(
         campaignId: Long,

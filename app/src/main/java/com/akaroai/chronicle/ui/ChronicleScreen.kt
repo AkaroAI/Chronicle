@@ -25,6 +25,8 @@ enum class ChronicleTab(val label: String) {
     CHAT("Chat"),
     MEMORY("Memory"),
     CHARACTERS("Characters"),
+    WORLD("World"),
+    TIMELINE("Timeline"),
     REVIEW("Review")
 }
 
@@ -225,6 +227,8 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                                         ChronicleTab.CHAT -> Icons.Default.Chat
                                         ChronicleTab.MEMORY -> Icons.Default.Book
                                         ChronicleTab.CHARACTERS -> Icons.Default.Groups
+                                        ChronicleTab.WORLD -> Icons.Default.Public
+                                        ChronicleTab.TIMELINE -> Icons.Default.History
                                         ChronicleTab.REVIEW -> Icons.Default.Notifications
                                     },
                                     item.label
@@ -300,6 +304,8 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     ChronicleTab.CHAT -> ChatTab(vm, ps.enabled)
                     ChronicleTab.MEMORY -> MemoryTab(vm)
                     ChronicleTab.CHARACTERS -> CharactersTab(vm)
+                    ChronicleTab.WORLD -> WorldTab(vm)
+                    ChronicleTab.TIMELINE -> TimelineTab(vm)
                     ChronicleTab.REVIEW -> ReviewTab(vm)
                 }
             }

@@ -16,12 +16,16 @@ data class ChronicleBackupData(
     val messages: List<MessageEntity>,
     val memories: List<MemoryEntity>,
     val characters: List<CharacterEntity>,
-    val proposals: List<ChangeProposalEntity>
+    val proposals: List<ChangeProposalEntity>,
+    val locations: List<LocationEntity> = emptyList(),
+    val factions: List<FactionEntity> = emptyList(),
+    val quests: List<QuestEntity> = emptyList(),
+    val timelineEvents: List<TimelineEventEntity> = emptyList()
 )
 
 object ChronicleBackup {
     const val FORMAT_NAME = "chronicle"
-    const val FORMAT_VERSION = 2
+    const val FORMAT_VERSION = 3
 
     fun write(data: ChronicleBackupData, output: OutputStream) {
         ZipOutputStream(output.buffered()).use { zip ->
@@ -37,12 +41,20 @@ object ChronicleBackup {
                     .put("memories", data.memories.size)
                     .put("messages", data.messages.size)
                     .put("proposals", data.proposals.size)
+                    .put("locations", data.locations.size)
+                    .put("factions", data.factions.size)
+                    .put("quests", data.quests.size)
+                    .put("timelineEvents", data.timelineEvents.size)
             )
             zip.putJson("campaign.json", campaignToJson(data.campaign))
             zip.putJson("characters.json", JSONArray().apply { data.characters.forEach { put(characterToJson(it)) } })
             zip.putJson("memories.json", JSONArray().apply { data.memories.forEach { put(memoryToJson(it)) } })
             zip.putJson("messages.json", JSONArray().apply { data.messages.forEach { put(messageToJson(it)) } })
             zip.putJson("proposals.json", JSONArray().apply { data.proposals.forEach { put(proposalToJson(it)) } })
+            zip.putJson("locations.json", JSONArray().apply { data.locations.forEach { put(locationToJson(it)) } })
+            zip.putJson("factions.json", JSONArray().apply { data.factions.forEach { put(factionToJson(it)) } })
+            zip.putJson("quests.json", JSONArray().apply { data.quests.forEach { put(questToJson(it)) } })
+            zip.putJson("timeline.json", JSONArray().apply { data.timelineEvents.forEach { put(timelineToJson(it)) } })
         }
     }
 
@@ -77,7 +89,11 @@ object ChronicleBackup {
             characters = parseArray(entries["characters.json"]) { characterFromJson(it) },
             memories = parseArray(entries["memories.json"]) { memoryFromJson(it) },
             messages = parseArray(entries["messages.json"]) { messageFromJson(it) },
-            proposals = parseArray(entries["proposals.json"]) { proposalFromJson(it) }
+            proposals = parseArray(entries["proposals.json"]) { proposalFromJson(it) },
+            locations = parseArray(entries["locations.json"]) { locationFromJson(it) },
+            factions = parseArray(entries["factions.json"]) { factionFromJson(it) },
+            quests = parseArray(entries["quests.json"]) { questFromJson(it) },
+            timelineEvents = parseArray(entries["timeline.json"]) { timelineFromJson(it) }
         )
     }
 
@@ -194,6 +210,49 @@ object ChronicleBackup {
         integrityWarning = o.optString("integrityWarning"),
         status = o.optString("status", "Pending"), supersededById = nullableLong(o, "supersededById"),
         createdAt = o.optLong("createdAt", System.currentTimeMillis())
+    )
+
+
+    private fun locationToJson(x: LocationEntity) = JSONObject()
+        .put("name", x.name).put("region", x.region).put("parentLocation", x.parentLocation)
+        .put("description", x.description).put("discoveryState", x.discoveryState)
+        .put("status", x.status).put("notes", x.notes).put("firstSeenAt", x.firstSeenAt).put("updatedAt", x.updatedAt)
+    private fun locationFromJson(o: JSONObject) = LocationEntity(
+        campaignId = 0, name = o.optString("name"), region = o.optString("region"),
+        parentLocation = o.optString("parentLocation"), description = o.optString("description"),
+        discoveryState = o.optString("discoveryState","Discovered"), status = o.optString("status","Active"),
+        notes = o.optString("notes"), firstSeenAt = o.optLong("firstSeenAt",System.currentTimeMillis()),
+        updatedAt = o.optLong("updatedAt",System.currentTimeMillis())
+    )
+    private fun factionToJson(x: FactionEntity) = JSONObject()
+        .put("name",x.name).put("description",x.description).put("alignment",x.alignment)
+        .put("relationshipToParty",x.relationshipToParty).put("status",x.status).put("goals",x.goals)
+        .put("notes",x.notes).put("createdAt",x.createdAt).put("updatedAt",x.updatedAt)
+    private fun factionFromJson(o: JSONObject) = FactionEntity(
+        campaignId=0,name=o.optString("name"),description=o.optString("description"),
+        alignment=o.optString("alignment"),relationshipToParty=o.optString("relationshipToParty","Unknown"),
+        status=o.optString("status","Active"),goals=o.optString("goals"),notes=o.optString("notes"),
+        createdAt=o.optLong("createdAt",System.currentTimeMillis()),updatedAt=o.optLong("updatedAt",System.currentTimeMillis())
+    )
+    private fun questToJson(x: QuestEntity) = JSONObject()
+        .put("title",x.title).put("summary",x.summary).put("status",x.status).put("objective",x.objective)
+        .put("relatedLocation",x.relatedLocation).put("relatedFaction",x.relatedFaction)
+        .put("importance",x.importance).put("notes",x.notes).put("createdAt",x.createdAt).put("updatedAt",x.updatedAt)
+    private fun questFromJson(o: JSONObject) = QuestEntity(
+        campaignId=0,title=o.optString("title"),summary=o.optString("summary"),status=o.optString("status","Active"),
+        objective=o.optString("objective"),relatedLocation=o.optString("relatedLocation"),relatedFaction=o.optString("relatedFaction"),
+        importance=o.optString("importance","Normal"),notes=o.optString("notes"),
+        createdAt=o.optLong("createdAt",System.currentTimeMillis()),updatedAt=o.optLong("updatedAt",System.currentTimeMillis())
+    )
+    private fun timelineToJson(x: TimelineEventEntity) = JSONObject()
+        .put("title",x.title).put("summary",x.summary).put("eventType",x.eventType).put("location",x.location)
+        .put("involvedCharacters",x.involvedCharacters).put("storyArc",x.storyArc).put("importance",x.importance)
+        .put("source",x.source).put("storyOrder",x.storyOrder).put("createdAt",x.createdAt)
+    private fun timelineFromJson(o: JSONObject) = TimelineEventEntity(
+        campaignId=0,title=o.optString("title"),summary=o.optString("summary"),eventType=o.optString("eventType","Event"),
+        location=o.optString("location"),involvedCharacters=o.optString("involvedCharacters"),storyArc=o.optString("storyArc"),
+        importance=o.optString("importance","Normal"),source=o.optString("source","Review"),storyOrder=o.optLong("storyOrder"),
+        createdAt=o.optLong("createdAt",System.currentTimeMillis())
     )
 
     private fun nullableLong(o: JSONObject, key: String): Long? =
