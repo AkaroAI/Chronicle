@@ -38,6 +38,8 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val error by vm.lastError.collectAsState()
     val notice by vm.notice.collectAsState()
     val proposals by vm.pendingProposals.collectAsState()
+    val externalDraft by vm.externalImportDraft.collectAsState()
+    val importAnalyzing by vm.isImportAnalyzing.collectAsState()
     val context = LocalContext.current
 
     var tab by remember { mutableStateOf(ChronicleTab.CHAT) }
@@ -59,6 +61,12 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
         ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) importChoice = uri
+    }
+
+    val externalImportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) vm.analyzeExternalCampaign(context, uri)
     }
 
     val snack = remember { SnackbarHostState() }
@@ -126,6 +134,19 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                                         ))
                                     },
                                     leadingIcon = { Icon(Icons.Default.FileDownload, null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Import existing campaign") },
+                                    onClick = {
+                                        menu = false
+                                        externalImportLauncher.launch(arrayOf(
+                                            "text/plain",
+                                            "text/markdown",
+                                            "application/json",
+                                            "*/*"
+                                        ))
+                                    },
+                                    leadingIcon = { Icon(Icons.Default.AutoAwesome, null) }
                                 )
                                 HorizontalDivider()
                                 DropdownMenuItem(
@@ -257,6 +278,21 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                             Spacer(Modifier.width(6.dp))
                             Text("Import .chronicle")
                         }
+                        OutlinedButton(
+                            onClick = {
+                                externalImportLauncher.launch(arrayOf(
+                                    "text/plain",
+                                    "text/markdown",
+                                    "application/json",
+                                    "*/*"
+                                ))
+                            },
+                            enabled = !importAnalyzing
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (importAnalyzing) "Analyzing…" else "Import existing campaign")
+                        }
                     }
                 }
             } else {
@@ -320,6 +356,14 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     }
                 }
             }
+        )
+    }
+
+    externalDraft?.let { draft ->
+        ExternalImportReviewDialog(
+            draft = draft,
+            onDismiss = vm::cancelExternalImport,
+            onImport = vm::commitExternalImport
         )
     }
 
@@ -846,4 +890,117 @@ private fun AddMemoryDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
+}
+
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ExternalImportReviewDialog(
+    draft: com.akaroai.chronicle.data.ExternalImportDraft,
+    onDismiss: () -> Unit,
+    onImport: (com.akaroai.chronicle.data.ExternalImportDraft) -> Unit
+) {
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            Modifier.fillMaxWidth(.96f).fillMaxHeight(.92f),
+            shape = RoundedCornerShape(24.dp)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Import Review", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Chronicle has not written any of this to canon yet. Review the extracted draft first.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                LazyColumn(
+                    Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        ElevatedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(14.dp)) {
+                                Text(draft.campaignName, fontWeight = FontWeight.Bold)
+                                if (draft.description.isNotBlank()) Text(draft.description)
+                                if (draft.setting.isNotBlank()) Text("Setting: ${draft.setting}")
+                                if (draft.currentLocation.isNotBlank()) Text("Current location: ${draft.currentLocation}")
+                                if (draft.currentObjective.isNotBlank()) Text("Objective: ${draft.currentObjective}")
+                            }
+                        }
+                    }
+
+                    item {
+                        Text(
+                            "Characters (${draft.characters.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    items(draft.characters) { c ->
+                        ElevatedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(c.name, fontWeight = FontWeight.Bold)
+                                    Text(c.confidence, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Text("${c.castTier}${if (c.species.isNotBlank()) " • ${c.species}" else ""}")
+                                if (c.personality.isNotBlank()) Text(c.personality, maxLines = 3)
+                            }
+                        }
+                    }
+
+                    item {
+                        Text(
+                            "Memories / Lore (${draft.memories.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    items(draft.memories) { m ->
+                        ElevatedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Row(
+                                    Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("${m.category} • ${m.title}", fontWeight = FontWeight.Bold)
+                                    Text(m.confidence, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Text(m.content, maxLines = 5)
+                            }
+                        }
+                    }
+
+                    item {
+                        ElevatedCard(Modifier.fillMaxWidth()) {
+                            Column(Modifier.padding(12.dp)) {
+                                Text("Transcript preservation", fontWeight = FontWeight.Bold)
+                                Text(
+                                    if (draft.messages.isNotEmpty())
+                                        "${draft.messages.size} speaker-prefixed chat messages detected and ready to restore into Chat."
+                                    else
+                                        "No reliable User:/Assistant:/GM: transcript structure detected. The original source will be preserved as an Imported Source memory instead."
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    Button(onClick = { onImport(draft) }) {
+                        Text("Approve & Create")
+                    }
+                }
+            }
+        }
+    }
 }

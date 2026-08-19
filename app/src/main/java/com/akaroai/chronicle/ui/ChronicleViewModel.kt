@@ -61,6 +61,12 @@ class ChronicleViewModel(
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
 
+    private val _externalImportDraft = MutableStateFlow<ExternalImportDraft?>(null)
+    val externalImportDraft = _externalImportDraft.asStateFlow()
+
+    private val _isImportAnalyzing = MutableStateFlow(false)
+    val isImportAnalyzing = _isImportAnalyzing.asStateFlow()
+
     init {
         viewModelScope.launch {
             campaigns.collect { list ->
@@ -142,6 +148,99 @@ class ChronicleViewModel(
                 }
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Campaign import failed."
+            }
+        }
+    }
+
+    fun analyzeExternalCampaign(context: Context, uri: Uri) {
+        if (!_providerSettings.value.enabled || _isImportAnalyzing.value) {
+            _lastError.value = "Enable the AI provider before importing an external campaign."
+            return
+        }
+        viewModelScope.launch {
+            _isImportAnalyzing.value = true
+            _lastError.value = null
+            try {
+                val text = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                        ?: error("Could not read that campaign file.")
+                }
+                if (text.isBlank()) error("That campaign file is empty.")
+                if (text.length > 1_500_000) error("This file is too large for one-pass import. Split it into smaller parts first.")
+
+                val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
+                val system = """
+                    You are Chronicle's external campaign migration analyzer.
+                    Convert supplied campaign material into a cautious structured draft.
+                    Return ONLY one JSON object. Never invent missing facts.
+
+                    CONFIDENCE:
+                    High confidence = explicitly established/repeated.
+                    Needs review = plausible but not fully certain.
+                    Ambiguous = conflicting, unclear, hypothetical, or identity uncertain.
+
+                    CAST TIERS:
+                    Main = central protagonist/core companion.
+                    Secondary = recurring important ally/rival/family/villain/mentor.
+                    Supporting = recurring arc-relevant character.
+                    Background = incidental/minor character.
+                    Do not promote a character merely because their name appears often in one scene.
+
+                    Extract durable canon, not every sentence. Preserve contradictions by marking Ambiguous.
+                    Do not silently reconcile conflicting source statements.
+
+                    JSON SCHEMA:
+                    {
+                      "campaignName":"...",
+                      "description":"...",
+                      "setting":"...",
+                      "genreTone":"...",
+                      "currentLocation":"...",
+                      "currentObjective":"...",
+                      "characters":[{
+                        "name":"...","castTier":"Main|Secondary|Supporting|Background",
+                        "species":"","age":"","pronouns":"","appearance":"","personality":"",
+                        "backstory":"","abilities":"","equipment":"","relationship":"",
+                        "affiliations":"","goals":"","fears":"","secrets":"","injuries":"",
+                        "notes":"","status":"Active","confidence":"High confidence|Needs review|Ambiguous"
+                      }],
+                      "memories":[{
+                        "category":"Timeline|Lore|Relationship|Canon|Quest|World|Event",
+                        "title":"...","content":"...",
+                        "confidence":"High confidence|Needs review|Ambiguous"
+                      }]
+                    }
+                """.trimIndent()
+
+                val raw = provider.generate(
+                    ProviderRequest(
+                        systemPrompt = system,
+                        memoryContext = "",
+                        messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text"))
+                    )
+                )
+                _externalImportDraft.value = ExternalCampaignImport.parseAnalysis(raw, text)
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "External campaign analysis failed."
+            } finally {
+                _isImportAnalyzing.value = false
+            }
+        }
+    }
+
+    fun cancelExternalImport() {
+        _externalImportDraft.value = null
+    }
+
+    fun commitExternalImport(draft: ExternalImportDraft) {
+        viewModelScope.launch {
+            try {
+                val id = repository.commitExternalImport(draft)
+                selectedId.value = id
+                _externalImportDraft.value = null
+                _notice.value = "External campaign imported. Review its characters and memories before continuing."
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Could not create imported campaign."
             }
         }
     }

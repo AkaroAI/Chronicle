@@ -240,6 +240,83 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         proposals.forEach { rejectProposal(it) }
     }
 
+
+    suspend fun commitExternalImport(draft: ExternalImportDraft): Long {
+        val campaignId = dao.insertCampaign(
+            CampaignEntity(
+                name = draft.campaignName.trim().ifBlank { "Imported Campaign" },
+                description = draft.description.trim(),
+                setting = draft.setting.trim(),
+                genreTone = draft.genreTone.trim(),
+                currentLocation = draft.currentLocation.trim(),
+                currentObjective = draft.currentObjective.trim()
+            )
+        )
+
+        draft.characters.forEach { c ->
+            dao.insertCharacter(
+                CharacterEntity(
+                    campaignId = campaignId,
+                    name = c.name,
+                    species = c.species,
+                    age = c.age,
+                    pronouns = c.pronouns,
+                    appearance = c.appearance,
+                    personality = c.personality,
+                    backstory = c.backstory,
+                    abilities = c.abilities,
+                    equipment = c.equipment,
+                    relationship = c.relationship,
+                    affiliations = c.affiliations,
+                    goals = c.goals,
+                    fears = c.fears,
+                    secrets = c.secrets,
+                    injuries = c.injuries,
+                    notes = c.notes,
+                    status = c.status,
+                    castTier = c.castTier
+                )
+            )
+        }
+
+        draft.memories.forEach { m ->
+            dao.insertMemory(
+                MemoryEntity(
+                    campaignId = campaignId,
+                    category = m.category,
+                    title = m.title,
+                    content = m.content,
+                    pinned = true
+                )
+            )
+        }
+
+        draft.messages.forEach { m ->
+            dao.insertMessage(
+                MessageEntity(
+                    campaignId = campaignId,
+                    role = m.role,
+                    content = m.content
+                )
+            )
+        }
+
+        // Keep the source available even when its formatting cannot be converted to chat rows.
+        if (draft.messages.isEmpty() && draft.sourceText.isNotBlank()) {
+            dao.insertMemory(
+                MemoryEntity(
+                    campaignId = campaignId,
+                    category = "Imported Source",
+                    title = "Original imported campaign material",
+                    content = draft.sourceText,
+                    pinned = false
+                )
+            )
+        }
+        dao.touchCampaign(campaignId)
+        return campaignId
+    }
+
     private fun JSONObject.valueOr(key: String, fallback: String): String {
         if (!has(key) || isNull(key)) return fallback
         return optString(key, fallback)
