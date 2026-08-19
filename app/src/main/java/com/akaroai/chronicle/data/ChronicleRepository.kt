@@ -212,10 +212,14 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     }
 
     suspend fun addProposal(proposal: ChangeProposalEntity) {
-        val oldPending = if (proposal.targetType in setOf(
-                "location_upsert", "faction_upsert", "quest_upsert", "timeline_event_new"
-            )) {
-            emptyList()
+        val worldTypes = setOf("location_upsert", "faction_upsert", "quest_upsert", "timeline_event_new")
+        val oldPending = if (proposal.targetType in worldTypes) {
+            val identity = proposalIdentity(proposal)
+            dao.proposalsSnapshot(proposal.campaignId).filter {
+                it.status == "Pending" &&
+                    it.targetType == proposal.targetType &&
+                    proposalIdentity(it) == identity
+            }
         } else {
             dao.pendingForTarget(
                 proposal.campaignId,
@@ -224,6 +228,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             )
         }
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
+
+        // Exact duplicate pending proposals are noise; ignore them.
+        if (oldPending.any { normalizeJson(it.proposedChanges) == normalizeJson(proposal.proposedChanges) }) {
+            return
+        }
 
         var guarded = proposal
 
@@ -269,7 +278,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
 
         val newId = dao.insertProposal(guarded)
 
-        if (newFields.isNotEmpty()) {
+        if (proposal.targetType in worldTypes) {
+            oldPending.forEach { old ->
+                dao.updateProposal(old.copy(status = "Superseded", supersededById = newId))
+            }
+        } else if (newFields.isNotEmpty()) {
             oldPending.forEach { old ->
                 val overlap = ProposalParser.changedFieldNames(old.proposedChanges).intersect(newFields)
                 if (overlap.isNotEmpty()) {
@@ -546,6 +559,69 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             )
         }
 
+        draft.locations.forEach { l ->
+            dao.insertLocation(
+                LocationEntity(
+                    campaignId = campaignId,
+                    name = l.name,
+                    region = l.region,
+                    parentLocation = l.parentLocation,
+                    description = l.description,
+                    discoveryState = l.discoveryState,
+                    status = l.status,
+                    notes = l.notes
+                )
+            )
+        }
+
+        draft.factions.forEach { f ->
+            dao.insertFaction(
+                FactionEntity(
+                    campaignId = campaignId,
+                    name = f.name,
+                    description = f.description,
+                    alignment = f.alignment,
+                    relationshipToParty = f.relationshipToParty,
+                    status = f.status,
+                    goals = f.goals,
+                    notes = f.notes
+                )
+            )
+        }
+
+        draft.quests.forEach { q ->
+            dao.insertQuest(
+                QuestEntity(
+                    campaignId = campaignId,
+                    title = q.title,
+                    summary = q.summary,
+                    status = q.status,
+                    objective = q.objective,
+                    relatedLocation = q.relatedLocation,
+                    relatedFaction = q.relatedFaction,
+                    importance = q.importance,
+                    notes = q.notes
+                )
+            )
+        }
+
+        draft.timelineEvents.forEachIndexed { index, e ->
+            dao.insertTimelineEvent(
+                TimelineEventEntity(
+                    campaignId = campaignId,
+                    title = e.title,
+                    summary = e.summary,
+                    eventType = e.eventType,
+                    location = e.location,
+                    involvedCharacters = e.involvedCharacters,
+                    storyArc = e.storyArc,
+                    importance = e.importance,
+                    source = "Imported Campaign",
+                    storyOrder = index.toLong() + 1L
+                )
+            )
+        }
+
         draft.messages.forEach { m ->
             dao.insertMessage(
                 MessageEntity(
@@ -570,6 +646,25 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         dao.touchCampaign(campaignId)
         return campaignId
     }
+
+    private fun proposalIdentity(p: ChangeProposalEntity): String {
+        return runCatching {
+            val o = JSONObject(p.proposedChanges)
+            when (p.targetType) {
+                "location_upsert", "faction_upsert" -> o.optString("name").trim().lowercase()
+                "quest_upsert" -> o.optString("title").trim().lowercase()
+                "timeline_event_new" -> {
+                    val title = o.optString("title").trim().lowercase()
+                    val summary = o.optString("summary").trim().lowercase()
+                    "$title|$summary"
+                }
+                else -> "${p.targetType}|${p.targetId ?: 0}"
+            }
+        }.getOrDefault("${p.targetType}|${p.targetId ?: 0}")
+    }
+
+    private fun normalizeJson(raw: String): String =
+        runCatching { JSONObject(raw).toString() }.getOrDefault(raw.trim())
 
     private fun JSONObject.valueOr(key: String, fallback: String): String {
         if (!has(key) || isNull(key)) return fallback

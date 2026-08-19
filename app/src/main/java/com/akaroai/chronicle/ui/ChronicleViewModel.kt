@@ -207,6 +207,15 @@ class ChronicleViewModel(
                     Extract durable canon, not every sentence. Preserve contradictions by marking Ambiguous.
                     Do not silently reconcile conflicting source statements.
 
+                    WORLD-STATE EXTRACTION:
+                    - Locations: include only named places that matter to continuity. Preserve region/parent hierarchy when explicit.
+                    - Discovery state must reflect the source; do not mark Visited unless the party actually went there.
+                    - Factions: extract recurring/important organizations and their established relationship to the party.
+                    - Quests/story threads: extract active, paused, completed, or failed objectives that matter beyond one line.
+                    - Timeline: extract meaningful milestones only (major discoveries, battles, decisions, relationship shifts,
+                      quest outcomes, transformations, world changes). Do not turn routine dialogue into timeline entries.
+                    - Do not duplicate the same world object under slightly different wording.
+
                     JSON SCHEMA:
                     {
                       "campaignName":"...",
@@ -225,6 +234,31 @@ class ChronicleViewModel(
                       "memories":[{
                         "category":"Timeline|Lore|Relationship|Canon|Quest|World|Event",
                         "title":"...","content":"...",
+                        "confidence":"High confidence|Needs review|Ambiguous"
+                      }],
+                      "locations":[{
+                        "name":"...","region":"","parentLocation":"","description":"",
+                        "discoveryState":"Unknown|Heard About|Discovered|Visited",
+                        "status":"Active|Changed|Destroyed|Inaccessible","notes":"",
+                        "confidence":"High confidence|Needs review|Ambiguous"
+                      }],
+                      "factions":[{
+                        "name":"...","description":"","alignment":"",
+                        "relationshipToParty":"Unknown|Friendly|Neutral|Hostile|Allied",
+                        "status":"Active|Defeated|Disbanded|Unknown","goals":"","notes":"",
+                        "confidence":"High confidence|Needs review|Ambiguous"
+                      }],
+                      "quests":[{
+                        "title":"...","summary":"","status":"Active|Paused|Completed|Failed",
+                        "objective":"","relatedLocation":"","relatedFaction":"",
+                        "importance":"Critical|High|Normal|Low","notes":"",
+                        "confidence":"High confidence|Needs review|Ambiguous"
+                      }],
+                      "timelineEvents":[{
+                        "title":"...","summary":"",
+                        "eventType":"Discovery|Battle|Decision|Relationship|Quest|World Change|Character Change|Other",
+                        "location":"","involvedCharacters":"","storyArc":"",
+                        "importance":"Critical|High|Normal|Low",
                         "confidence":"High confidence|Needs review|Ambiguous"
                       }]
                     }
@@ -372,11 +406,10 @@ class ChronicleViewModel(
 
                 repository.addMessage(campaign.id, "assistant", reply)
 
-                if (
-                    _providerSettings.value.enabled &&
-                    _providerSettings.value.autoReviewEnabled
-                ) {
-                    scanForProposals(campaign, context, text, reply, provider)
+                if (_providerSettings.value.enabled) {
+                    // v0.9.1: continuity/world analysis is part of normal real-AI play.
+                    // The manual Scan button remains available as a recovery/re-scan tool.
+                    scanForProposals(campaign, buildCampaignContext(campaign), text, reply, provider)
                 }
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."

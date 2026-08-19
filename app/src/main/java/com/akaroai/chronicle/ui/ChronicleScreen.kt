@@ -911,8 +911,18 @@ private fun ExternalImportReviewDialog(
     var editCampaign by remember { mutableStateOf(false) }
     var editingCharacterIndex by remember { mutableStateOf<Int?>(null) }
     var editingMemoryIndex by remember { mutableStateOf<Int?>(null) }
+    var editingLocationIndex by remember { mutableStateOf<Int?>(null) }
+    var editingFactionIndex by remember { mutableStateOf<Int?>(null) }
+    var editingQuestIndex by remember { mutableStateOf<Int?>(null) }
+    var editingTimelineIndex by remember { mutableStateOf<Int?>(null) }
 
-    val allConfidence = working.characters.map { it.confidence } + working.memories.map { it.confidence }
+    val allConfidence =
+        working.characters.map { it.confidence } +
+        working.memories.map { it.confidence } +
+        working.locations.map { it.confidence } +
+        working.factions.map { it.confidence } +
+        working.quests.map { it.confidence } +
+        working.timelineEvents.map { it.confidence }
     val highCount = allConfidence.count { it == "High confidence" }
     val reviewCount = allConfidence.count { it == "Needs review" }
     val ambiguousCount = allConfidence.count { it == "Ambiguous" }
@@ -941,7 +951,7 @@ private fun ExternalImportReviewDialog(
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "${working.characters.size} Characters • ${working.memories.size} Memories • ${working.messages.size} Messages",
+                        "${working.characters.size} Characters • ${working.locations.size} Locations • ${working.factions.size} Factions • ${working.quests.size} Quests • ${working.timelineEvents.size} Timeline • ${working.memories.size} Memories • ${working.messages.size} Messages",
                         fontWeight = FontWeight.Bold
                     )
                     Text(
@@ -1111,6 +1121,70 @@ private fun ExternalImportReviewDialog(
                     }
 
                     item {
+                        Text("World Locations (${working.locations.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    itemsIndexed(working.locations) { index, l ->
+                        if (visible(l.confidence)) {
+                            ImportWorldCard(
+                                title = l.name,
+                                subtitle = listOf(l.region, l.discoveryState, l.status).filter { it.isNotBlank() }.joinToString(" • "),
+                                body = l.description,
+                                confidence = l.confidence,
+                                onEdit = { editingLocationIndex = index },
+                                onDelete = { working = working.copy(locations = working.locations.filterIndexed { i, _ -> i != index }) }
+                            )
+                        }
+                    }
+
+                    item {
+                        Text("Factions (${working.factions.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    itemsIndexed(working.factions) { index, f ->
+                        if (visible(f.confidence)) {
+                            ImportWorldCard(
+                                title = f.name,
+                                subtitle = listOf(f.relationshipToParty, f.status).filter { it.isNotBlank() }.joinToString(" • "),
+                                body = f.description.ifBlank { f.goals },
+                                confidence = f.confidence,
+                                onEdit = { editingFactionIndex = index },
+                                onDelete = { working = working.copy(factions = working.factions.filterIndexed { i, _ -> i != index }) }
+                            )
+                        }
+                    }
+
+                    item {
+                        Text("Quests / Story Threads (${working.quests.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    itemsIndexed(working.quests) { index, q ->
+                        if (visible(q.confidence)) {
+                            ImportWorldCard(
+                                title = q.title,
+                                subtitle = listOf(q.status, q.importance).filter { it.isNotBlank() }.joinToString(" • "),
+                                body = q.objective.ifBlank { q.summary },
+                                confidence = q.confidence,
+                                onEdit = { editingQuestIndex = index },
+                                onDelete = { working = working.copy(quests = working.quests.filterIndexed { i, _ -> i != index }) }
+                            )
+                        }
+                    }
+
+                    item {
+                        Text("Timeline Events (${working.timelineEvents.size})", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    }
+                    itemsIndexed(working.timelineEvents) { index, e ->
+                        if (visible(e.confidence)) {
+                            ImportWorldCard(
+                                title = e.title,
+                                subtitle = listOf(e.eventType, e.importance, e.location).filter { it.isNotBlank() }.joinToString(" • "),
+                                body = e.summary,
+                                confidence = e.confidence,
+                                onEdit = { editingTimelineIndex = index },
+                                onDelete = { working = working.copy(timelineEvents = working.timelineEvents.filterIndexed { i, _ -> i != index }) }
+                            )
+                        }
+                    }
+
+                    item {
                         ElevatedCard(Modifier.fillMaxWidth()) {
                             Column(Modifier.padding(12.dp)) {
                                 Text("Transcript preservation", fontWeight = FontWeight.Bold)
@@ -1184,6 +1258,39 @@ private fun ExternalImportReviewDialog(
                     editingMemoryIndex = null
                 }
             )
+        }
+    }
+
+    editingLocationIndex?.let { index ->
+        working.locations.getOrNull(index)?.let { item ->
+            ExternalLocationDraftEditor(item, { editingLocationIndex = null }) { updated ->
+                working = working.copy(locations = working.locations.toMutableList().also { if (index in it.indices) it[index] = updated })
+                editingLocationIndex = null
+            }
+        }
+    }
+    editingFactionIndex?.let { index ->
+        working.factions.getOrNull(index)?.let { item ->
+            ExternalFactionDraftEditor(item, { editingFactionIndex = null }) { updated ->
+                working = working.copy(factions = working.factions.toMutableList().also { if (index in it.indices) it[index] = updated })
+                editingFactionIndex = null
+            }
+        }
+    }
+    editingQuestIndex?.let { index ->
+        working.quests.getOrNull(index)?.let { item ->
+            ExternalQuestDraftEditor(item, { editingQuestIndex = null }) { updated ->
+                working = working.copy(quests = working.quests.toMutableList().also { if (index in it.indices) it[index] = updated })
+                editingQuestIndex = null
+            }
+        }
+    }
+    editingTimelineIndex?.let { index ->
+        working.timelineEvents.getOrNull(index)?.let { item ->
+            ExternalTimelineDraftEditor(item, { editingTimelineIndex = null }) { updated ->
+                working = working.copy(timelineEvents = working.timelineEvents.toMutableList().also { if (index in it.indices) it[index] = updated })
+                editingTimelineIndex = null
+            }
         }
     }
 }
@@ -1409,3 +1516,141 @@ private fun ExternalMemoryDraftEditor(
     )
 }
 
+
+
+@Composable
+private fun ImportWorldCard(
+    title: String,
+    subtitle: String,
+    body: String,
+    confidence: String,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    ElevatedCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(12.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, fontWeight = FontWeight.Bold)
+                    if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.labelMedium)
+                    Text(confidence, style = MaterialTheme.typography.labelSmall)
+                }
+                IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit") }
+                IconButton(onClick = onDelete) {
+                    Icon(Icons.Default.Delete, "Remove", tint = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (body.isNotBlank()) Text(body, maxLines = 5)
+        }
+    }
+}
+
+@Composable
+private fun ExternalLocationDraftEditor(
+    item: com.akaroai.chronicle.data.ImportedLocationDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedLocationDraft) -> Unit
+) {
+    var x by remember(item) { mutableStateOf(item) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit imported location") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("Name", x.name) { x = x.copy(name = it) }
+                Field("Region", x.region) { x = x.copy(region = it) }
+                Field("Parent location", x.parentLocation) { x = x.copy(parentLocation = it) }
+                Field("Description", x.description, 3) { x = x.copy(description = it) }
+                Field("Discovery state", x.discoveryState) { x = x.copy(discoveryState = it) }
+                Field("Status", x.status) { x = x.copy(status = it) }
+                Field("Notes", x.notes, 2) { x = x.copy(notes = it) }
+            }
+        },
+        confirmButton = { Button(enabled = x.name.isNotBlank(), onClick = { onSave(x.copy(name = x.name.trim())) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ExternalFactionDraftEditor(
+    item: com.akaroai.chronicle.data.ImportedFactionDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedFactionDraft) -> Unit
+) {
+    var x by remember(item) { mutableStateOf(item) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit imported faction") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("Name", x.name) { x = x.copy(name = it) }
+                Field("Description", x.description, 3) { x = x.copy(description = it) }
+                Field("Alignment", x.alignment) { x = x.copy(alignment = it) }
+                Field("Relationship to party", x.relationshipToParty) { x = x.copy(relationshipToParty = it) }
+                Field("Status", x.status) { x = x.copy(status = it) }
+                Field("Goals", x.goals, 3) { x = x.copy(goals = it) }
+                Field("Notes", x.notes, 2) { x = x.copy(notes = it) }
+            }
+        },
+        confirmButton = { Button(enabled = x.name.isNotBlank(), onClick = { onSave(x.copy(name = x.name.trim())) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ExternalQuestDraftEditor(
+    item: com.akaroai.chronicle.data.ImportedQuestDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedQuestDraft) -> Unit
+) {
+    var x by remember(item) { mutableStateOf(item) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit imported quest") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("Title", x.title) { x = x.copy(title = it) }
+                Field("Summary", x.summary, 3) { x = x.copy(summary = it) }
+                Field("Status", x.status) { x = x.copy(status = it) }
+                Field("Objective", x.objective, 3) { x = x.copy(objective = it) }
+                Field("Related location", x.relatedLocation) { x = x.copy(relatedLocation = it) }
+                Field("Related faction", x.relatedFaction) { x = x.copy(relatedFaction = it) }
+                Field("Importance", x.importance) { x = x.copy(importance = it) }
+                Field("Notes", x.notes, 2) { x = x.copy(notes = it) }
+            }
+        },
+        confirmButton = { Button(enabled = x.title.isNotBlank(), onClick = { onSave(x.copy(title = x.title.trim())) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun ExternalTimelineDraftEditor(
+    item: com.akaroai.chronicle.data.ImportedTimelineDraft,
+    onDismiss: () -> Unit,
+    onSave: (com.akaroai.chronicle.data.ImportedTimelineDraft) -> Unit
+) {
+    var x by remember(item) { mutableStateOf(item) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Edit imported timeline event") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Field("Title", x.title) { x = x.copy(title = it) }
+                Field("Summary", x.summary, 4) { x = x.copy(summary = it) }
+                Field("Event type", x.eventType) { x = x.copy(eventType = it) }
+                Field("Location", x.location) { x = x.copy(location = it) }
+                Field("Involved characters", x.involvedCharacters, 2) { x = x.copy(involvedCharacters = it) }
+                Field("Story arc", x.storyArc) { x = x.copy(storyArc = it) }
+                Field("Importance", x.importance) { x = x.copy(importance = it) }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = x.title.isNotBlank() && x.summary.isNotBlank(),
+                onClick = { onSave(x.copy(title = x.title.trim(), summary = x.summary.trim())) }
+            ) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
