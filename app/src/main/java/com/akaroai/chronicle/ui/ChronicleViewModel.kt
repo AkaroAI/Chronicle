@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.akaroai.chronicle.data.ChronicleRepository
+import com.akaroai.chronicle.data.ExternalCampaignImport
+import com.akaroai.chronicle.data.ExternalImportDraft
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
 import kotlinx.coroutines.Dispatchers
