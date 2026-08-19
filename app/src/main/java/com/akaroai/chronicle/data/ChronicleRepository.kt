@@ -153,6 +153,78 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         return importedId
     }
 
+    suspend fun buildCanonicalContextSnapshot(campaign: CampaignEntity): String {
+        val characters = dao.charactersSnapshot(campaign.id)
+        val memories = dao.memoriesSnapshot(campaign.id)
+        val locations = dao.locationsSnapshot(campaign.id)
+        val factions = dao.factionsSnapshot(campaign.id)
+        val quests = dao.questsSnapshot(campaign.id)
+        val timeline = dao.timelineSnapshot(campaign.id)
+
+        return buildString {
+            appendLine("CAMPAIGN:")
+            appendLine("Name: ${campaign.name}")
+            appendLine("Description: ${campaign.description}")
+            appendLine("Setting: ${campaign.setting}")
+            appendLine("Genre/Tone: ${campaign.genreTone}")
+            appendLine("Current location: ${campaign.currentLocation}")
+            appendLine("Current objective: ${campaign.currentObjective}")
+            appendLine()
+
+            appendLine("CANONICAL CHARACTER RECORDS — DATABASE SOURCE OF TRUTH:")
+            characters.forEach { c ->
+                appendLine(
+                    "${c.name} [ID ${c.id}] [CAST ${c.castTier}] [INTEGRITY ${c.integrityMode}] | " +
+                        "aliases=${c.aliases} | species=${c.species} | age=${c.age} | pronouns=${c.pronouns} | " +
+                        "appearance=${c.appearance} | personality=${c.personality} | backstory=${c.backstory} | " +
+                        "abilities=${c.abilities} | equipment=${c.equipment} | relationship=${c.relationship} | " +
+                        "affiliations=${c.affiliations} | goals=${c.goals} | fears=${c.fears} | secrets=${c.secrets} | " +
+                        "injuries=${c.injuries} | notes=${c.notes} | status=${c.status}"
+                )
+            }
+            appendLine()
+
+            appendLine("WORLD STATE:")
+            locations.forEach { l ->
+                appendLine(
+                    "LOCATION | ${l.name} | region=${l.region} | parent=${l.parentLocation} | " +
+                        "discovery=${l.discoveryState} | status=${l.status} | ${l.description} | notes=${l.notes}"
+                )
+            }
+            factions.forEach { f ->
+                appendLine(
+                    "FACTION | ${f.name} | relationship=${f.relationshipToParty} | status=${f.status} | " +
+                        "alignment=${f.alignment} | goals=${f.goals} | ${f.description} | notes=${f.notes}"
+                )
+            }
+            quests.forEach { q ->
+                appendLine(
+                    "QUEST | EXACT TITLE=${q.title} | status=${q.status} | importance=${q.importance} | " +
+                        "objective=${q.objective} | location=${q.relatedLocation} | faction=${q.relatedFaction} | " +
+                        "summary=${q.summary} | notes=${q.notes}"
+                )
+            }
+            appendLine()
+
+            appendLine("TIMELINE:")
+            timeline.takeLast(40).forEach { e ->
+                appendLine(
+                    "TIMELINE | order=${e.storyOrder} | ${e.title} | type=${e.eventType} | " +
+                        "importance=${e.importance} | location=${e.location} | characters=${e.involvedCharacters} | " +
+                        "arc=${e.storyArc} | ${e.summary}"
+                )
+            }
+            appendLine()
+
+            if (memories.isNotEmpty()) {
+                appendLine("MEMORIES:")
+                memories.takeLast(80).forEach { m ->
+                    appendLine("[${m.category}] ${m.title}: ${m.content}")
+                }
+            }
+        }
+    }
+
     suspend fun addTimelineEvent(event: TimelineEventEntity) {
         val current = dao.timelineSnapshot(event.campaignId)
         val order = if (event.storyOrder > 0) event.storyOrder else ((current.maxOfOrNull { it.storyOrder } ?: 0L) + 1L)
@@ -228,6 +300,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             )
         }
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
+
+        // Do not generate Review noise for world facts already represented identically in canon.
+        if (proposal.targetType in worldTypes && isWorldNoOp(proposal)) {
+            return
+        }
 
         // Exact duplicate pending proposals are noise; ignore them.
         if (oldPending.any { normalizeJson(it.proposedChanges) == normalizeJson(proposal.proposedChanges) }) {
@@ -645,6 +722,70 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
         dao.touchCampaign(campaignId)
         return campaignId
+    }
+
+    private suspend fun isWorldNoOp(p: ChangeProposalEntity): Boolean {
+        return runCatching {
+            val o = JSONObject(p.proposedChanges)
+            when (p.targetType) {
+                "location_upsert" -> {
+                    val name = o.optString("name").trim()
+                    val old = dao.locationsSnapshot(p.campaignId)
+                        .firstOrNull { it.name.trim().equals(name, ignoreCase = true) }
+                        ?: return@runCatching false
+                    fun same(key: String, current: String) =
+                        !o.has(key) || o.isNull(key) || o.optString(key) == current
+                    same("region", old.region) &&
+                        same("parentLocation", old.parentLocation) &&
+                        same("description", old.description) &&
+                        same("discoveryState", old.discoveryState) &&
+                        same("status", old.status) &&
+                        same("notes", old.notes)
+                }
+
+                "faction_upsert" -> {
+                    val name = o.optString("name").trim()
+                    val old = dao.factionsSnapshot(p.campaignId)
+                        .firstOrNull { it.name.trim().equals(name, ignoreCase = true) }
+                        ?: return@runCatching false
+                    fun same(key: String, current: String) =
+                        !o.has(key) || o.isNull(key) || o.optString(key) == current
+                    same("description", old.description) &&
+                        same("alignment", old.alignment) &&
+                        same("relationshipToParty", old.relationshipToParty) &&
+                        same("status", old.status) &&
+                        same("goals", old.goals) &&
+                        same("notes", old.notes)
+                }
+
+                "quest_upsert" -> {
+                    val title = o.optString("title").trim()
+                    val old = dao.questsSnapshot(p.campaignId)
+                        .firstOrNull { it.title.trim().equals(title, ignoreCase = true) }
+                        ?: return@runCatching false
+                    fun same(key: String, current: String) =
+                        !o.has(key) || o.isNull(key) || o.optString(key) == current
+                    same("summary", old.summary) &&
+                        same("status", old.status) &&
+                        same("objective", old.objective) &&
+                        same("relatedLocation", old.relatedLocation) &&
+                        same("relatedFaction", old.relatedFaction) &&
+                        same("importance", old.importance) &&
+                        same("notes", old.notes)
+                }
+
+                "timeline_event_new" -> {
+                    val title = o.optString("title").trim()
+                    val summary = o.optString("summary").trim()
+                    dao.timelineSnapshot(p.campaignId).any {
+                        it.title.trim().equals(title, ignoreCase = true) &&
+                            it.summary.trim().equals(summary, ignoreCase = true)
+                    }
+                }
+
+                else -> false
+            }
+        }.getOrDefault(false)
     }
 
     private fun proposalIdentity(p: ChangeProposalEntity): String {

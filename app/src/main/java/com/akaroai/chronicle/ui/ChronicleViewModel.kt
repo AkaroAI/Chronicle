@@ -409,7 +409,13 @@ class ChronicleViewModel(
                 if (_providerSettings.value.enabled) {
                     // v0.9.1: continuity/world analysis is part of normal real-AI play.
                     // The manual Scan button remains available as a recovery/re-scan tool.
-                    scanForProposals(campaign, buildCampaignContext(campaign), text, reply, provider)
+                    scanForProposals(
+                        campaign,
+                        repository.buildCanonicalContextSnapshot(campaign),
+                        text,
+                        reply,
+                        provider
+                    )
                 }
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
@@ -432,7 +438,7 @@ class ChronicleViewModel(
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
                 campaign,
-                buildCampaignContext(campaign),
+                repository.buildCanonicalContextSnapshot(campaign),
                 lastUser.content,
                 lastAssistant.content,
                 provider
@@ -477,6 +483,27 @@ class ChronicleViewModel(
                 Replace = genuine correction, permanent transformation, exact state replacement, or explicit user rewrite.
                 Clear = explicit removal/loss of the field's value.
                 character_new always uses Replace.
+
+                AUTOMATION COVERAGE CHECKLIST
+                Before returning, explicitly check the latest exchange against ALL of these categories:
+                1. Existing character updates
+                2. New canonical characters
+                3. Location discovery/status/change
+                4. Faction creation/status/relationship change
+                5. Existing quest lifecycle change: Active, Paused, Completed, Failed
+                6. New quest/story thread
+                7. Campaign current location/objective changes
+                8. Meaningful timeline milestone
+                9. Durable memory/lore/relationship facts
+
+                EXISTING QUEST LIFECYCLE
+                - When a quest already exists in WORLD STATE, REUSE ITS EXACT TITLE from context.
+                - Do not create a second quest merely because the wording changed.
+                - If the objective was achieved, propose quest_upsert with status Completed.
+                - If it definitively failed, propose status Failed.
+                - If it is deliberately suspended, propose status Paused.
+                - Preserve the same quest identity and update its other fields only when the exchange establishes a change.
+                - A completed/failed quest may also justify a separate timeline_event_new if the outcome is a meaningful story milestone.
 
                 CORE RULES
                 - Do not speculate.
@@ -571,6 +598,8 @@ class ChronicleViewModel(
                   "changes":{...}
                 }
 
+                Return [] only after checking every category in the automation coverage checklist against the fresh canonical context.
+                If an existing canonical record changed state, do not return [] merely because no new record was created.
                 If nothing deserves persistence, return [].
             """.trimIndent()
 
