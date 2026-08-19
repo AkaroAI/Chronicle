@@ -430,7 +430,6 @@ private fun CharactersTab(vm: ChronicleViewModel) {
                 }
             }
         }
-    }
 
     if (adding) {
         campaign?.let {
