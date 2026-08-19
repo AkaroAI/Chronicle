@@ -320,9 +320,21 @@ class ChronicleViewModel(
 
                 val system = """
                     You are Chronicle's campaign storyteller and GM.
+
+                    CANONICAL AUTHORITY
+                    - The Chronicle database character records supplied in context are the ONLY authoritative character sheets.
+                    - Never maintain a second independent character sheet inside chat.
+                    - Never silently rewrite a canonical character record in narration.
+                    - If the user asks you to CREATE or REGISTER a new character sheet, do NOT print a full authoritative sheet in chat.
+                      Briefly acknowledge the request and continue naturally; Chronicle's separate Review system will propose the real character record.
+                    - If the user asks to SHOW an existing character sheet, mirror ONLY the canonical database record supplied in context.
+                      Label it as a read-only view and do not invent values for blank fields.
+                    - Character changes happen through story events and Chronicle Review, not by editing an unofficial chat sheet.
+
+                    STORY RULES
                     Preserve established canon, causal continuity, character autonomy, and consequences.
                     Never import facts from another campaign.
-                    Treat supplied campaign and character-sheet data as authoritative.
+                    Treat supplied campaign and canonical character data as authoritative.
                     Cast Tier indicates narrative importance, not moral worth.
                     If something is not established here, do not pretend you remember it.
                 """.trimIndent()
@@ -391,11 +403,33 @@ class ChronicleViewModel(
 
         try {
             val analyzerSystem = """
-                You are Chronicle's continuity change detector.
+                You are Chronicle's continuity and canonical-record change detector.
                 Return ONLY a JSON array of proposed persistent changes from the latest exchange.
 
-                CORE RULES
+                AUTHORITY RULES
                 - You may PROPOSE. You never decide canon.
+                - Chronicle's existing database character records are authoritative.
+                - Never create a duplicate character record for a name already present in context.
+                - If a character already exists, use character_update with that exact targetId.
+                - If the user asks to create/register a NEW character sheet and no matching canonical character exists,
+                  use character_new. The storyteller's chat response is NOT the character sheet.
+                - Do not treat a character sheet printed by the assistant in chat as authoritative evidence by itself.
+                - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
+
+                EVIDENCE TYPE
+                Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact.
+                Story Event = a resolved event/consequence actually occurred in the exchange.
+                Assistant Only = introduced only by the storyteller/AI without user confirmation.
+                Unverified = source is unclear or conflicting.
+
+                CHANGE MODE
+                Append = add development while preserving established content. PREFER for personality growth,
+                relationships, goals, fears, injuries, notes, affiliations, additive equipment, and additive abilities.
+                Replace = genuine correction, permanent transformation, exact state replacement, or explicit user rewrite.
+                Clear = explicit removal/loss of the field's value.
+                character_new always uses Replace.
+
+                CORE RULES
                 - Do not speculate.
                 - Ignore jokes, hypotheticals, plans, possibilities, questions, and uncertain statements.
                 - Avoid information already stored in campaign context.
@@ -403,18 +437,10 @@ class ChronicleViewModel(
                 - Maximum 12 proposals.
 
                 CAST TIERS
-                Main: core protagonists/companions. Track meaningful emotional, physical, relational,
-                ability, equipment, goal, secret, and status changes closely.
-                Secondary: recurring important allies, rivals, family, villains, mentors. Track meaningful changes.
-                Supporting: arc-relevant recurring characters. Track only changes likely to matter again.
-                Background: incidental characters. DO NOT create character_update proposals for them unless
-                their change is HIGH or CRITICAL and directly impacts Main cast, world state, a major event,
-                quest, faction, location, or important lore.
-
-                IMPORTANT DISTINCTION
-                A background character can reveal or cause important WORLD/EVENT/LORE facts.
-                In that case file the proposal under World, Events, Lore, Relationships, or Quests rather
-                than creating trivial background-character records.
+                Main: core protagonists/companions.
+                Secondary: recurring important allies, rivals, family, villains, mentors.
+                Supporting: recurring arc-relevant characters.
+                Background: incidental characters. Do not create trivial background records unless recurring or consequential.
 
                 PRIORITY
                 Critical = death/resurrection, permanent transformation, catastrophic world change,
@@ -422,29 +448,48 @@ class ChronicleViewModel(
                 High = major injury/healing, new permanent power, major quest outcome, important reveal,
                 major relationship development, meaningful cast-tier promotion.
                 Normal = durable goals, equipment, affiliations, recurring development, relevant lore.
-                Low = useful but nonessential persistent detail. Avoid low-value background noise.
-
-                GROUP TYPES
-                Characters, World, Events, Lore, Relationships, Quests, Other
+                Low = useful but nonessential persistent detail.
 
                 ALLOWED TARGETS
 
-                memory_new
-                changes={"category":"Timeline|Lore|Relationship|Canon|Quest","title":"...","content":"..."}
+                character_new
+                targetId=null
+                changes={
+                  "name":"...",
+                  "aliases":"",
+                  "species":"",
+                  "age":"",
+                  "pronouns":"",
+                  "appearance":"",
+                  "personality":"",
+                  "backstory":"",
+                  "abilities":"",
+                  "equipment":"",
+                  "relationship":"",
+                  "affiliations":"",
+                  "goals":"",
+                  "fears":"",
+                  "secrets":"",
+                  "injuries":"",
+                  "notes":"",
+                  "status":"Active",
+                  "castTier":"Main|Secondary|Supporting|Background"
+                }
 
                 character_update
-                targetId MUST match an existing character ID.
-                changes={"fields":{"fieldName":"COMPLETE NEW VALUE"}}
+                targetId MUST match an existing canonical character ID.
+                changes={"fields":{"fieldName":"NEW OR ADDITIVE VALUE"}}
                 Allowed fields: name, aliases, species, age, pronouns, appearance, personality,
                 backstory, abilities, equipment, relationship, affiliations, goals, fears,
                 secrets, injuries, notes, status.
 
+                memory_new
+                changes={"category":"Timeline|Lore|Relationship|Canon|Quest","title":"...","content":"..."}
+
                 campaign_update
                 changes={"fields":{"currentLocation":"...","currentObjective":"..."}}
-                Allowed fields: name, description, setting, genreTone, currentLocation, currentObjective.
 
                 cast_tier_update
-                ONLY when repeated story importance clearly changed.
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
 
                 EVERY OBJECT:
@@ -452,10 +497,12 @@ class ChronicleViewModel(
                   "summary":"plain English",
                   "targetType":"...",
                   "targetId":123 or null,
-                  "reason":"evidence from latest exchange",
+                  "reason":"specific evidence from the latest exchange",
                   "priority":"Critical|High|Normal|Low",
                   "groupType":"Characters|World|Events|Lore|Relationships|Quests|Other",
                   "groupLabel":"character name, location, arc, faction, relationship, or short folder label",
+                  "changeMode":"Append|Replace|Clear",
+                  "evidenceType":"Player Confirmed|Story Event|Assistant Only|Unverified",
                   "changes":{...}
                 }
 
@@ -501,7 +548,9 @@ class ChronicleViewModel(
                             groupType = parsed.groupType,
                             groupLabel = parsed.groupLabel.ifBlank {
                                 targetCharacter?.name.orEmpty()
-                            }
+                            },
+                            changeMode = parsed.changeMode,
+                            evidenceType = parsed.evidenceType
                         )
                     )
                 }
@@ -529,10 +578,10 @@ class ChronicleViewModel(
         }
 
         if (characters.value.isNotEmpty()) {
-            appendLine("CHARACTERS:")
+            appendLine("CANONICAL CHARACTER RECORDS — DATABASE SOURCE OF TRUTH:")
             characters.value.forEach { c ->
                 appendLine(
-                    "${c.name} [ID ${c.id}] [CAST ${c.castTier}] | aliases=${c.aliases} | species=${c.species} | " +
+                     "${c.name} [ID ${c.id}] [CAST ${c.castTier}] [INTEGRITY ${c.integrityMode}] | aliases=${c.aliases} | species=${c.species} | " +
                         "age=${c.age} | pronouns=${c.pronouns} | appearance=${c.appearance} | " +
                         "personality=${c.personality} | backstory=${c.backstory} | abilities=${c.abilities} | " +
                         "equipment=${c.equipment} | relationship=${c.relationship} | affiliations=${c.affiliations} | " +

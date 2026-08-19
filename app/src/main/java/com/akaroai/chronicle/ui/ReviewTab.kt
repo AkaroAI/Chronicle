@@ -397,6 +397,7 @@ private fun IntegritySettingsDialog(
 private fun targetLabel(proposal: ChangeProposalEntity): String =
     when (proposal.targetType) {
         "memory_new" -> "New campaign memory"
+        "character_new" -> "New canonical character"
         "character_update" -> "Character sheet • ID ${proposal.targetId ?: "?"}"
         "cast_tier_update" -> "Cast importance • ID ${proposal.targetId ?: "?"}"
         "campaign_update" -> "Campaign details"

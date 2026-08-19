@@ -11,19 +11,19 @@ data class ParsedProposal(
     val reason: String,
     val priority: String,
     val groupType: String,
-    val groupLabel: String
+    val groupLabel: String,
+    val changeMode: String,
+    val evidenceType: String
 )
 
 object ProposalParser {
     private val priorities = setOf("Critical", "High", "Normal", "Low")
     private val groups = setOf("Characters", "World", "Events", "Lore", "Relationships", "Quests", "Other")
+    private val changeModes = setOf("Append", "Replace", "Clear")
+    private val evidenceTypes = setOf("Player Confirmed", "Story Event", "Assistant Only", "Unverified")
 
     fun parse(raw: String): List<ParsedProposal> {
-        val cleaned = raw
-            .replace("```json", "")
-            .replace("```", "")
-            .trim()
-
+        val cleaned = raw.replace("```json", "").replace("```", "").trim()
         val start = cleaned.indexOf('[')
         val end = cleaned.lastIndexOf(']')
         if (start < 0 || end <= start) return emptyList()
@@ -43,15 +43,23 @@ object ProposalParser {
 
             val priority = item.optString("priority", "Normal")
                 .takeIf { it in priorities } ?: "Normal"
-
             val groupType = item.optString("groupType", defaultGroup(targetType))
                 .takeIf { it in groups } ?: defaultGroup(targetType)
-
             val groupLabel = item.optString("groupLabel").trim()
+            val changeMode = item.optString("changeMode", defaultChangeMode(targetType))
+                .takeIf { it in changeModes } ?: defaultChangeMode(targetType)
+            val evidenceType = item.optString("evidenceType", "Unverified")
+                .takeIf { it in evidenceTypes } ?: "Unverified"
 
             if (
                 summary.isNotBlank() &&
-                targetType in setOf("memory_new", "character_update", "campaign_update", "cast_tier_update") &&
+                targetType in setOf(
+                    "memory_new",
+                    "character_new",
+                    "character_update",
+                    "campaign_update",
+                    "cast_tier_update"
+                ) &&
                 changes.length() > 0
             ) {
                 result += ParsedProposal(
@@ -62,11 +70,12 @@ object ProposalParser {
                     reason = reason,
                     priority = priority,
                     groupType = groupType,
-                    groupLabel = groupLabel
+                    groupLabel = groupLabel,
+                    changeMode = changeMode,
+                    evidenceType = evidenceType
                 )
             }
         }
-
         return result.take(12)
     }
 
@@ -77,6 +86,7 @@ object ProposalParser {
             val keys = obj.keys()
             while (keys.hasNext()) {
                 val key = keys.next()
+                if (key.startsWith("__")) continue
                 val value = obj.opt(key)
                 if (key == "fields" && value is JSONObject) {
                     val fieldKeys = value.keys()
@@ -100,7 +110,10 @@ object ProposalParser {
             val fields = obj.optJSONObject("fields") ?: obj
             buildSet {
                 val keys = fields.keys()
-                while (keys.hasNext()) add(keys.next())
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    if (!key.startsWith("__")) add(key)
+                }
             }
         } catch (_: Throwable) {
             emptySet()
@@ -109,10 +122,16 @@ object ProposalParser {
 
     private fun defaultGroup(targetType: String): String =
         when (targetType) {
-            "character_update", "cast_tier_update" -> "Characters"
+            "character_new", "character_update", "cast_tier_update" -> "Characters"
             "campaign_update" -> "World"
             "memory_new" -> "Lore"
             else -> "Other"
+        }
+
+    private fun defaultChangeMode(targetType: String): String =
+        when (targetType) {
+            "character_update" -> "Append"
+            else -> "Replace"
         }
 
     private fun humanize(value: String): String =

@@ -148,6 +148,34 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
 
         var guarded = proposal
+
+        if (proposal.targetType == "character_new") {
+            val changes = JSONObject(proposal.proposedChanges)
+            val proposedName = changes.optString("name").trim()
+            if (proposedName.isBlank()) return
+
+            val existingNames = dao.charactersSnapshot(proposal.campaignId)
+                .map { it.name.trim().lowercase() }
+                .toSet()
+            if (proposedName.lowercase() in existingNames) return
+
+            val duplicatePending = dao.proposalsSnapshot(proposal.campaignId)
+                .filter { it.status == "Pending" && it.targetType == "character_new" }
+                .any {
+                    runCatching {
+                        JSONObject(it.proposedChanges).optString("name").trim()
+                            .equals(proposedName, ignoreCase = true)
+                    }.getOrDefault(false)
+                }
+            if (duplicatePending) return
+
+            if (proposal.evidenceType == "Assistant Only" || proposal.evidenceType == "Unverified") {
+                guarded = proposal.copy(
+                    integrityWarning = "New character record came from ${proposal.evidenceType.lowercase()} evidence. Review the sheet and evidence before creating canon."
+                )
+            }
+        }
+
         if (proposal.targetType == "character_update" && proposal.targetId != null) {
             val character = dao.characterById(proposal.targetId)
             if (character != null) {
@@ -193,6 +221,51 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         changes.remove("__evidenceType")
 
         when (proposal.targetType) {
+            "character_new" -> {
+                val name = changes.optString("name").trim()
+                if (name.isBlank()) error("New character proposal needs a name.")
+
+                val existing = dao.charactersSnapshot(proposal.campaignId)
+                    .firstOrNull { it.name.trim().equals(name, ignoreCase = true) }
+                if (existing != null) {
+                    error("$name already exists as a canonical character. Use a character update instead.")
+                }
+
+                if (evidence == "Assistant Only" || evidence == "Unverified") {
+                    error("New character records require Player Confirmed or Story Event evidence before becoming canon.")
+                }
+
+                val tier = changes.optString("castTier", "Supporting")
+                    .takeIf { it in setOf("Main", "Secondary", "Supporting", "Background") }
+                    ?: "Supporting"
+
+                addCharacter(
+                    CharacterEntity(
+                        campaignId = proposal.campaignId,
+                        name = name,
+                        aliases = changes.optString("aliases"),
+                        species = changes.optString("species"),
+                        age = changes.optString("age"),
+                        pronouns = changes.optString("pronouns"),
+                        appearance = changes.optString("appearance"),
+                        personality = changes.optString("personality"),
+                        backstory = changes.optString("backstory"),
+                        abilities = changes.optString("abilities"),
+                        equipment = changes.optString("equipment"),
+                        relationship = changes.optString("relationship"),
+                        affiliations = changes.optString("affiliations"),
+                        goals = changes.optString("goals"),
+                        fears = changes.optString("fears"),
+                        secrets = changes.optString("secrets"),
+                        injuries = changes.optString("injuries"),
+                        notes = changes.optString("notes"),
+                        status = changes.optString("status", "Active").ifBlank { "Active" },
+                        castTier = tier,
+                        integrityMode = if (tier == "Main") "Strict" else "Balanced"
+                    )
+                )
+            }
+
             "memory_new" -> {
                 val title = changes.optString("title").trim()
                 val content = changes.optString("content").trim()
