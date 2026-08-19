@@ -146,7 +146,22 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             proposal.targetId
         )
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
-        val newId = dao.insertProposal(proposal)
+
+        var guarded = proposal
+        if (proposal.targetType == "character_update" && proposal.targetId != null) {
+            val character = dao.characterById(proposal.targetId)
+            if (character != null) {
+                guarded = proposal.copy(
+                    integrityWarning = IntegrityPolicy.warning(
+                        character,
+                        newFields,
+                        proposal.changeMode
+                    )
+                )
+            }
+        }
+
+        val newId = dao.insertProposal(guarded)
 
         if (newFields.isNotEmpty()) {
             oldPending.forEach { old ->
@@ -166,12 +181,26 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         val changesRaw = editedChanges ?: proposal.proposedChanges
         val changes = JSONObject(changesRaw)
 
+        val overrideLocked = changes.optBoolean("__integrityOverride", false)
+        val requestedMode = changes.optString("__changeMode", proposal.changeMode)
+            .takeIf { it in setOf("Append", "Replace", "Clear") } ?: "Replace"
+        val evidence = changes.optString("__evidenceType", proposal.evidenceType)
+            .takeIf { it in setOf("Player Confirmed", "Story Event", "Assistant Only", "Unverified") }
+            ?: "Unverified"
+
+        changes.remove("__integrityOverride")
+        changes.remove("__changeMode")
+        changes.remove("__evidenceType")
+
         when (proposal.targetType) {
             "memory_new" -> {
                 val title = changes.optString("title").trim()
                 val content = changes.optString("content").trim()
                 val category = changes.optString("category", "Canon").trim().ifBlank { "Canon" }
                 if (title.isBlank() || content.isBlank()) error("Memory proposal needs a title and content.")
+                if (evidence == "Assistant Only") {
+                    error("Assistant-only narration cannot be promoted to canon memory without changing its evidence classification.")
+                }
                 addMemory(proposal.campaignId, title, content, category)
             }
 
@@ -179,26 +208,44 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 val id = proposal.targetId ?: error("Character proposal has no character ID.")
                 val current = dao.characterById(id) ?: error("Character no longer exists.")
                 val fields = changes.optJSONObject("fields") ?: changes
+                val changed = jsonKeys(fields)
+                val protected = IntegrityPolicy.protectedOverlap(current, changed)
+
+                if (protected.isNotEmpty() && !overrideLocked) {
+                    error("Protected fields require explicit override: ${protected.joinToString(", ")}")
+                }
+                if (evidence == "Assistant Only" && changed.any {
+                        it in setOf("name","aliases","species","age","pronouns","personality",
+                            "backstory","abilities","relationship","affiliations","goals","fears","secrets")
+                    }) {
+                    error("Assistant-only narration cannot rewrite character identity. Reclassify the evidence only if the story actually established it.")
+                }
+
+                fun next(key: String, old: String): String {
+                    if (!fields.has(key) || fields.isNull(key)) return old
+                    return IntegrityPolicy.applyMode(old, fields.optString(key), requestedMode)
+                }
+
                 updateCharacter(
                     current.copy(
-                        name = fields.valueOr("name", current.name),
-                        aliases = fields.valueOr("aliases", current.aliases),
-                        species = fields.valueOr("species", current.species),
-                        age = fields.valueOr("age", current.age),
-                        pronouns = fields.valueOr("pronouns", current.pronouns),
-                        appearance = fields.valueOr("appearance", current.appearance),
-                        personality = fields.valueOr("personality", current.personality),
-                        backstory = fields.valueOr("backstory", current.backstory),
-                        abilities = fields.valueOr("abilities", current.abilities),
-                        equipment = fields.valueOr("equipment", current.equipment),
-                        relationship = fields.valueOr("relationship", current.relationship),
-                        affiliations = fields.valueOr("affiliations", current.affiliations),
-                        goals = fields.valueOr("goals", current.goals),
-                        fears = fields.valueOr("fears", current.fears),
-                        secrets = fields.valueOr("secrets", current.secrets),
-                        injuries = fields.valueOr("injuries", current.injuries),
-                        notes = fields.valueOr("notes", current.notes),
-                        status = fields.valueOr("status", current.status)
+                        name = next("name", current.name),
+                        aliases = next("aliases", current.aliases),
+                        species = next("species", current.species),
+                        age = next("age", current.age),
+                        pronouns = next("pronouns", current.pronouns),
+                        appearance = next("appearance", current.appearance),
+                        personality = next("personality", current.personality),
+                        backstory = next("backstory", current.backstory),
+                        abilities = next("abilities", current.abilities),
+                        equipment = next("equipment", current.equipment),
+                        relationship = next("relationship", current.relationship),
+                        affiliations = next("affiliations", current.affiliations),
+                        goals = next("goals", current.goals),
+                        fears = next("fears", current.fears),
+                        secrets = next("secrets", current.secrets),
+                        injuries = next("injuries", current.injuries),
+                        notes = next("notes", current.notes),
+                        status = next("status", current.status)
                     )
                 )
             }
@@ -207,12 +254,18 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 val id = proposal.targetId ?: error("Cast-tier proposal has no character ID.")
                 val current = dao.characterById(id) ?: error("Character no longer exists.")
                 val tier = changes.optString("castTier").trim()
-                if (tier !in setOf("Main", "Secondary", "Supporting", "Background")) error("Invalid cast tier.")
+                if (tier !in setOf("Main", "Secondary", "Supporting", "Background")) {
+                    error("Invalid cast tier.")
+                }
                 updateCharacter(current.copy(castTier = tier))
             }
 
             "campaign_update" -> {
-                val current = dao.campaignById(proposal.campaignId) ?: error("Campaign no longer exists.")
+                if (evidence == "Assistant Only") {
+                    error("Assistant-only narration cannot rewrite campaign state without review classification.")
+                }
+                val current = dao.campaignById(proposal.campaignId)
+                    ?: error("Campaign no longer exists.")
                 val fields = changes.optJSONObject("fields") ?: changes
                 updateCampaign(
                     current.copy(
@@ -229,7 +282,15 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             else -> error("Unsupported proposal type: ${proposal.targetType}")
         }
 
-        dao.updateProposal(proposal.copy(proposedChanges = changesRaw, status = "Approved"))
+        dao.updateProposal(
+            proposal.copy(
+                proposedChanges = changes.toString(),
+                changeMode = requestedMode,
+                evidenceType = evidence,
+                integrityWarning = "",
+                status = "Approved"
+            )
+        )
     }
 
     suspend fun approveAll(proposals: List<ChangeProposalEntity>) {
@@ -239,7 +300,6 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     suspend fun rejectAll(proposals: List<ChangeProposalEntity>) {
         proposals.forEach { rejectProposal(it) }
     }
-
 
     suspend fun commitExternalImport(draft: ExternalImportDraft): Long {
         val campaignId = dao.insertCampaign(
@@ -274,7 +334,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                     injuries = c.injuries,
                     notes = c.notes,
                     status = c.status,
-                    castTier = c.castTier
+                    castTier = c.castTier,
+                    integrityMode = if (c.castTier == "Main") "Strict" else "Balanced"
                 )
             )
         }
@@ -301,7 +362,6 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             )
         }
 
-        // Keep the source available even when its formatting cannot be converted to chat rows.
         if (draft.messages.isEmpty() && draft.sourceText.isNotBlank()) {
             dao.insertMemory(
                 MemoryEntity(
@@ -320,5 +380,13 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     private fun JSONObject.valueOr(key: String, fallback: String): String {
         if (!has(key) || isNull(key)) return fallback
         return optString(key, fallback)
+    }
+
+    private fun jsonKeys(o: JSONObject): Set<String> = buildSet {
+        val keys = o.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (!key.startsWith("__")) add(key)
+        }
     }
 }

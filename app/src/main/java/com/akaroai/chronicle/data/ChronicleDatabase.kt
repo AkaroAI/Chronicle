@@ -16,7 +16,7 @@ import com.akaroai.chronicle.model.*
         CharacterEntity::class,
         ChangeProposalEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class ChronicleDatabase : RoomDatabase() {
@@ -76,6 +76,16 @@ abstract class ChronicleDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE characters ADD COLUMN integrityMode TEXT NOT NULL DEFAULT 'Balanced'")
+                db.execSQL("ALTER TABLE characters ADD COLUMN protectedFields TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE change_proposals ADD COLUMN changeMode TEXT NOT NULL DEFAULT 'Replace'")
+                db.execSQL("ALTER TABLE change_proposals ADD COLUMN evidenceType TEXT NOT NULL DEFAULT 'Unverified'")
+                db.execSQL("ALTER TABLE change_proposals ADD COLUMN integrityWarning TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun get(context: Context): ChronicleDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -83,7 +93,7 @@ abstract class ChronicleDatabase : RoomDatabase() {
                     ChronicleDatabase::class.java,
                     "chronicle.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { INSTANCE = it }
             }

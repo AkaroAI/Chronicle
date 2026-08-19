@@ -22,14 +22,12 @@ data class CampaignEntity(
 
 @Entity(
     tableName = "messages",
-    foreignKeys = [
-        ForeignKey(
-            entity = CampaignEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["campaignId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
+    foreignKeys = [ForeignKey(
+        entity = CampaignEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["campaignId"],
+        onDelete = ForeignKey.CASCADE
+    )],
     indices = [Index("campaignId")]
 )
 data class MessageEntity(
@@ -42,14 +40,12 @@ data class MessageEntity(
 
 @Entity(
     tableName = "memories",
-    foreignKeys = [
-        ForeignKey(
-            entity = CampaignEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["campaignId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
+    foreignKeys = [ForeignKey(
+        entity = CampaignEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["campaignId"],
+        onDelete = ForeignKey.CASCADE
+    )],
     indices = [Index("campaignId")]
 )
 data class MemoryEntity(
@@ -64,14 +60,12 @@ data class MemoryEntity(
 
 @Entity(
     tableName = "characters",
-    foreignKeys = [
-        ForeignKey(
-            entity = CampaignEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["campaignId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
+    foreignKeys = [ForeignKey(
+        entity = CampaignEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["campaignId"],
+        onDelete = ForeignKey.CASCADE
+    )],
     indices = [Index("campaignId"), Index("castTier")]
 )
 data class CharacterEntity(
@@ -96,25 +90,22 @@ data class CharacterEntity(
     val notes: String = "",
     val status: String = "Active",
     val castTier: String = "Supporting",
+    val integrityMode: String = "Balanced",
+    val protectedFields: String = "",
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
 )
 
 @Entity(
     tableName = "change_proposals",
-    foreignKeys = [
-        ForeignKey(
-            entity = CampaignEntity::class,
-            parentColumns = ["id"],
-            childColumns = ["campaignId"],
-            onDelete = ForeignKey.CASCADE
-        )
-    ],
+    foreignKeys = [ForeignKey(
+        entity = CampaignEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["campaignId"],
+        onDelete = ForeignKey.CASCADE
+    )],
     indices = [
-        Index("campaignId"),
-        Index("status"),
-        Index("priority"),
-        Index("groupType")
+        Index("campaignId"), Index("status"), Index("priority"), Index("groupType")
     ]
 )
 data class ChangeProposalEntity(
@@ -128,6 +119,9 @@ data class ChangeProposalEntity(
     val priority: String = "Normal",
     val groupType: String = "Other",
     val groupLabel: String = "",
+    val changeMode: String = "Replace",
+    val evidenceType: String = "Unverified",
+    val integrityWarning: String = "",
     val status: String = "Pending",
     val supersededById: Long? = null,
     val createdAt: Long = System.currentTimeMillis()
