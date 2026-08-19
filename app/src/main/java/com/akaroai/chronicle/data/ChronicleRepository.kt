@@ -153,6 +153,38 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         return importedId
     }
 
+    suspend fun buildAutomationContextSnapshot(campaign: CampaignEntity): String {
+        val characters = dao.charactersSnapshot(campaign.id)
+        val locations = dao.locationsSnapshot(campaign.id)
+        val factions = dao.factionsSnapshot(campaign.id)
+        val quests = dao.questsSnapshot(campaign.id)
+        val timeline = dao.timelineSnapshot(campaign.id)
+
+        return buildString {
+            appendLine("CAMPAIGN | ${campaign.name} | location=${campaign.currentLocation} | objective=${campaign.currentObjective}")
+            appendLine("CHARACTERS:")
+            characters.forEach { c ->
+                appendLine("${c.name} [ID ${c.id}] [${c.castTier}] | status=${c.status} | personality=${c.personality.take(180)} | relationship=${c.relationship.take(180)} | injuries=${c.injuries.take(160)} | goals=${c.goals.take(160)}")
+            }
+            appendLine("LOCATIONS:")
+            locations.forEach { l ->
+                appendLine("${l.name} | region=${l.region} | discovery=${l.discoveryState} | status=${l.status}")
+            }
+            appendLine("FACTIONS:")
+            factions.forEach { f ->
+                appendLine("${f.name} | relationship=${f.relationshipToParty} | status=${f.status} | goals=${f.goals.take(160)}")
+            }
+            appendLine("QUESTS:")
+            quests.forEach { q ->
+                appendLine("EXACT TITLE=${q.title} | status=${q.status} | objective=${q.objective} | location=${q.relatedLocation} | faction=${q.relatedFaction} | importance=${q.importance}")
+            }
+            appendLine("RECENT TIMELINE:")
+            timeline.takeLast(12).forEach { e ->
+                appendLine("${e.title} | ${e.eventType} | ${e.importance} | ${e.location} | ${e.summary.take(220)}")
+            }
+        }
+    }
+
     suspend fun buildCanonicalContextSnapshot(campaign: CampaignEntity): String {
         val characters = dao.charactersSnapshot(campaign.id)
         val memories = dao.memoriesSnapshot(campaign.id)
@@ -223,6 +255,146 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 }
             }
         }
+    }
+
+    suspend fun proposeExplicitQuestCommand(campaignId: Long, text: String): Boolean {
+        val clean = text.trim()
+        val lower = clean.lowercase()
+        val existing = dao.questsSnapshot(campaignId)
+
+        fun mentionedQuest(): QuestEntity? {
+            return existing
+                .sortedByDescending { it.title.length }
+                .firstOrNull { q -> lower.contains(q.title.lowercase()) }
+                ?: existing.filter { it.status == "Active" }.singleOrNull()
+        }
+
+        val completionIntent =
+            Regex("""\b(complete|completed|finish|finished|done|resolved|accomplished)\b""").containsMatchIn(lower) &&
+                Regex("""\b(quest|mission|objective|task|rescue)\b""").containsMatchIn(lower) ||
+                Regex("""\b(quest|mission)\s+(is\s+)?(complete|completed|finished|done)\b""").containsMatchIn(lower)
+
+        if (completionIntent) {
+            val q = mentionedQuest()
+            if (q != null) {
+                proposeQuestStateChange(campaignId, q.title, "Completed", clean, "Player Confirmed")
+                return true
+            }
+        }
+
+        val failureIntent =
+            Regex("""\b(fail|failed|failure|lost)\b""").containsMatchIn(lower) &&
+                Regex("""\b(quest|mission|objective|task)\b""").containsMatchIn(lower)
+        if (failureIntent) {
+            val q = mentionedQuest()
+            if (q != null) {
+                proposeQuestStateChange(campaignId, q.title, "Failed", clean, "Player Confirmed")
+                return true
+            }
+        }
+
+        val pauseIntent =
+            Regex("""\b(pause|paused|suspend|suspended|put .* on hold)\b""").containsMatchIn(lower) &&
+                Regex("""\b(quest|mission|objective|task)\b""").containsMatchIn(lower)
+        if (pauseIntent) {
+            val q = mentionedQuest()
+            if (q != null) {
+                proposeQuestStateChange(campaignId, q.title, "Paused", clean, "Player Confirmed")
+                return true
+            }
+        }
+
+        val newPatterns = listOf(
+            Regex("""(?i)\b(?:add|create|start|begin|track)\s+(?:a\s+|new\s+)?quest(?:\s+(?:called|named|titled))?\s*[:\-]?\s*(.+)"""),
+            Regex("""(?i)\b(?:our\s+)?(?:new\s+|active\s+)?quest\s+is\s+(?:to\s+)?(.+)""")
+        )
+        val match = newPatterns.firstNotNullOfOrNull { it.find(clean) }
+        if (match != null) {
+            val phrase = match.groupValues.getOrNull(1).orEmpty()
+                .trim().trim('"','\'','.', '!', '?')
+                .substringBefore("\n")
+                .take(180)
+            if (phrase.isNotBlank()) {
+                val title = phrase
+                    .substringBefore(".")
+                    .substringBefore(", and ")
+                    .take(80)
+                    .trim()
+                    .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
+                val duplicate = existing.any {
+                    it.title.equals(title, ignoreCase = true) ||
+                        it.objective.equals(phrase, ignoreCase = true)
+                }
+                if (!duplicate) {
+                    addProposal(
+                        ChangeProposalEntity(
+                            campaignId = campaignId,
+                            summary = "Add quest: $title",
+                            targetType = "quest_upsert",
+                            proposedChanges = JSONObject()
+                                .put("title", title)
+                                .put("summary", phrase)
+                                .put("status", "Active")
+                                .put("objective", phrase)
+                                .put("relatedLocation", "")
+                                .put("relatedFaction", "")
+                                .put("importance", "Normal")
+                                .put("notes", "")
+                                .toString(),
+                            reason = "Explicit player quest command: $clean",
+                            priority = "Normal",
+                            groupType = "Quests",
+                            groupLabel = title,
+                            changeMode = "Replace",
+                            evidenceType = "Player Confirmed"
+                        )
+                    )
+                }
+                return true
+            }
+        }
+
+        return false
+    }
+
+    suspend fun proposeQuestStateChange(
+        campaignId: Long,
+        questTitle: String,
+        status: String,
+        reason: String,
+        evidenceType: String = "Player Confirmed"
+    ) {
+        val existing = dao.questsSnapshot(campaignId)
+            .firstOrNull { it.title.trim().equals(questTitle.trim(), ignoreCase = true) }
+            ?: return
+
+        if (existing.status.equals(status, ignoreCase = true)) return
+
+        addProposal(
+            ChangeProposalEntity(
+                campaignId = campaignId,
+                summary = "${existing.title} → $status",
+                targetType = "quest_upsert",
+                targetId = null,
+                proposedChanges = JSONObject()
+                    .put("title", existing.title)
+                    .put("status", status)
+                    .put("summary", existing.summary)
+                    .put("objective", existing.objective)
+                    .put("relatedLocation", existing.relatedLocation)
+                    .put("relatedFaction", existing.relatedFaction)
+                    .put("importance", existing.importance)
+                    .put("notes", existing.notes)
+                    .toString(),
+                reason = reason,
+                priority = if (status in setOf("Completed","Failed")) "High" else "Normal",
+                groupType = "Quests",
+                groupLabel = existing.title,
+                changeMode = "Replace",
+                evidenceType = evidenceType
+            )
+        )
     }
 
     suspend fun addTimelineEvent(event: TimelineEventEntity) {

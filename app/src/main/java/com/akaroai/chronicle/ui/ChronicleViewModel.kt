@@ -73,6 +73,8 @@ class ChronicleViewModel(
     private val _isReviewScanning = MutableStateFlow(false)
     val isReviewScanning = _isReviewScanning.asStateFlow()
 
+    private var _queuedManualRescan: Boolean = false
+
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError = _lastError.asStateFlow()
 
@@ -355,6 +357,11 @@ class ChronicleViewModel(
 
             try {
                 repository.addMessage(campaign.id, "user", text)
+
+                // v0.9.3 fast path: explicit quest commands create/update Review proposals
+                // without waiting for the general AI continuity analyzer.
+                repository.proposeExplicitQuestCommand(campaign.id, text)
+
                 val context = buildCampaignContext(campaign)
 
                 val history = messages.value
@@ -380,6 +387,13 @@ class ChronicleViewModel(
                     - If the user asks to SHOW an existing character sheet, mirror ONLY the canonical database record supplied in context.
                       Label it as a read-only view and do not invent values for blank fields.
                     - Character changes happen through story events and Chronicle Review, not by editing an unofficial chat sheet.
+
+                    QUEST / WORLD AUTHORITY
+                    - Chronicle's World > Quests records are the ONLY authoritative quest tracker.
+                    - If the user asks to add/start/create/complete/fail/pause/update a quest, do NOT create or maintain an authoritative quest card/list/JSON/block inside Chat.
+                    - Briefly acknowledge the story/command naturally. Chronicle Review handles the actual quest record.
+                    - If the user asks to SHOW quests, mirror only the canonical quest records supplied in context as a read-only view.
+                    - Never claim a quest was saved merely because you formatted it in Chat.
 
                     STORY RULES
                     Preserve established canon, causal continuity, character autonomy, and consequences.
@@ -411,7 +425,7 @@ class ChronicleViewModel(
                     // The manual Scan button remains available as a recovery/re-scan tool.
                     scanForProposals(
                         campaign,
-                        repository.buildCanonicalContextSnapshot(campaign),
+                        repository.buildAutomationContextSnapshot(campaign),
                         text,
                         reply,
                         provider
@@ -427,7 +441,13 @@ class ChronicleViewModel(
 
     fun scanLastExchangeForProposals() {
         val campaign = selectedCampaign.value ?: return
-        if (!_providerSettings.value.enabled || _isReviewScanning.value) return
+        if (!_providerSettings.value.enabled) return
+
+        if (_isReviewScanning.value) {
+            _queuedManualRescan = true
+            _notice.value = "Scan queued. Chronicle will rescan the latest exchange when the current scan finishes."
+            return
+        }
 
         val lastUser = messages.value.lastOrNull { it.role == "user" } ?: return
         val lastAssistant = messages.value.lastOrNull {
@@ -438,7 +458,7 @@ class ChronicleViewModel(
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
                 campaign,
-                repository.buildCanonicalContextSnapshot(campaign),
+                repository.buildAutomationContextSnapshot(campaign),
                 lastUser.content,
                 lastAssistant.content,
                 provider
@@ -653,6 +673,11 @@ class ChronicleViewModel(
             // Proposal extraction never interrupts active roleplay.
         } finally {
             _isReviewScanning.value = false
+
+            if (_queuedManualRescan) {
+                _queuedManualRescan = false
+                scanLastExchangeForProposals()
+            }
         }
     }
 

@@ -51,11 +51,17 @@ fun ReviewTab(vm: ChronicleViewModel) {
 
             OutlinedButton(
                 onClick = vm::scanLastExchangeForProposals,
-                enabled = provider.enabled && !scanning
+                enabled = provider.enabled
             ) {
                 Icon(Icons.Default.AutoFixHigh, null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (scanning) "Scanning…" else "Scan last exchange")
+                Text(if (scanning) "Queue rescan" else "Scan last exchange")
+            }
+            if (scanning) {
+                Text(
+                    "Automatic scan is running. You can queue one manual rescan instead of waiting for the button to unlock.",
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
 
             if (characters.isNotEmpty()) {
