@@ -42,6 +42,7 @@ fun WorldTab(vm: ChronicleViewModel) {
     val factions by vm.factions.collectAsState()
     val quests by vm.quests.collectAsState()
     val timeline by vm.timelineEvents.collectAsState()
+    val characters by vm.characters.collectAsState()
 
     var mode by remember { mutableStateOf(WorldMode.MAP) }
     var search by remember { mutableStateOf("") }
@@ -141,6 +142,7 @@ fun WorldTab(vm: ChronicleViewModel) {
                         campaignId = campaign?.id ?: 0,
                         currentLocation = campaign?.currentLocation.orEmpty(),
                         locations = filteredLocations,
+                        characters = characters,
                         onSelect = { selectedLocation = it }
                     )
                 }
@@ -158,6 +160,7 @@ fun WorldTab(vm: ChronicleViewModel) {
             factions = factions,
             quests = quests,
             timeline = timeline,
+            characters = characters,
             onDismiss = { selectedLocation = null }
         )
     }
@@ -168,6 +171,7 @@ private fun WorldMapCanvas(
     campaignId: Long,
     currentLocation: String,
     locations: List<LocationEntity>,
+    characters: List<CharacterEntity>,
     onSelect: (LocationEntity) -> Unit
 ) {
     val context = LocalContext.current
@@ -237,6 +241,10 @@ private fun WorldMapCanvas(
         }
 
         locations.forEach { l ->
+            val charactersHere = characters.filter { c ->
+                val text = listOf(c.notes, c.relationship, c.affiliations).joinToString(" ")
+                Regex("""(?i)(?:at|in|staying at|staying in|located at|located in|remains at|remains in)\s+${Regex.escape(l.name)}\b""").containsMatchIn(text)
+            }
             val pos = positions[l.name] ?: NodePos(.5f,.5f)
             val current = currentLocation.equals(l.name, true)
             val heard = l.discoveryState.equals("Heard About", true)
@@ -302,6 +310,15 @@ private fun WorldMapCanvas(
                 if (l.region.isNotBlank()) {
                     Text(l.region, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                 }
+                if (charactersHere.isNotEmpty()) {
+                    Text(
+                        "👥 " + charactersHere.take(3).joinToString(" • ") { it.name } +
+                            if (charactersHere.size > 3) " +${charactersHere.size - 3}" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
@@ -327,6 +344,7 @@ private fun LocationDetailSheet(
     factions: List<FactionEntity>,
     quests: List<QuestEntity>,
     timeline: List<TimelineEventEntity>,
+    characters: List<CharacterEntity>,
     onDismiss: () -> Unit
 ) {
     val relatedQuests = quests.filter {
@@ -340,6 +358,10 @@ private fun LocationDetailSheet(
             relatedQuests.any { q -> q.relatedFaction.equals(it.name, true) }
     }
     val events = timeline.filter { it.location.equals(location.name, true) }
+    val charactersHere = characters.filter { c ->
+        val text = listOf(c.notes, c.relationship, c.affiliations).joinToString(" ")
+        Regex("""(?i)(?:at|in|staying at|staying in|located at|located in|remains at|remains in)\s+${Regex.escape(location.name)}\b""").containsMatchIn(text)
+    }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(
@@ -367,6 +389,12 @@ private fun LocationDetailSheet(
             if (location.description.isNotBlank()) item { Text(location.description) }
             if (location.parentLocation.isNotBlank()) item {
                 Text("Within • ${location.parentLocation}", style = MaterialTheme.typography.bodySmall)
+            }
+            if (charactersHere.isNotEmpty()) {
+                item { SectionTitle("Characters here") }
+                items(charactersHere) { c ->
+                    MiniWorldCard(c.name, "${c.castTier} • ${c.status}", c.relationship.ifBlank { c.notes })
+                }
             }
             if (relatedQuests.isNotEmpty()) {
                 item { SectionTitle("Quests") }

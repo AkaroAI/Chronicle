@@ -388,6 +388,12 @@ class ChronicleViewModel(
                       Label it as a read-only view and do not invent values for blank fields.
                     - Character changes happen through story events and Chronicle Review, not by editing an unofficial chat sheet.
 
+                    CHARACTER PRESENCE AUTHORITY
+                    - Characters may occupy different locations at the same time.
+                    - Never teleport every character to the campaign current location.
+                    - Respect explicit "Currently at LOCATION." canonical notes supplied in character records.
+                    - If a companion stays behind, continue treating them as being at that prior location until canon moves them.
+
                     WORLD EXPLORER AUTHORITY
                     - Chronicle's approved Location records power the World Explorer.
                     - Never claim the party visited a place unless the story actually establishes arrival/presence.
@@ -522,6 +528,12 @@ class ChronicleViewModel(
                 8. Meaningful timeline milestone
                 9. Durable memory/lore/relationship facts
 
+                MAP CONNECTION RULES
+                - When the exchange explicitly establishes a direct route between two approved locations, preserve that relationship in location/world proposals.
+                - Never invent distance, direction, danger, or accessibility.
+                - Existing parentLocation hierarchy remains a valid visual connection.
+                - Travel between two places does not automatically mean one is the parent of the other.
+
                 EXISTING QUEST LIFECYCLE
                 - When a quest already exists in WORLD STATE, REUSE ITS EXACT TITLE from context.
                 - Do not create a second quest merely because the wording changed.
@@ -593,6 +605,15 @@ class ChronicleViewModel(
 
                 cast_tier_update
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
+
+                CHARACTER PRESENCE RULES
+                - Track independently where named characters currently are when the latest exchange explicitly establishes it.
+                - Character location is NOT automatically identical to campaign currentLocation; split parties and NPCs may remain elsewhere.
+                - For an existing character whose location changes, propose character_update and append a concise notes statement using the exact form "Currently at LOCATION_NAME.".
+                - When a character explicitly stays behind, preserve that character at the old location instead of moving everyone with the party.
+                - Do not infer an NPC's current location merely because they are associated with a place historically.
+                - When multiple named characters travel together, evaluate each character independently.
+                - This canonical note powers World Explorer character badges in v0.10.1.
 
                 WORLD EXPLORER RULES
                 - The approved Location records power the visual World Explorer map.
