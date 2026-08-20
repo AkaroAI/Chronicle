@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
 
 class ChronicleViewModel(
     private val repository: ChronicleRepository,
@@ -81,6 +82,10 @@ class ChronicleViewModel(
 
     private val _notice = MutableStateFlow<String?>(null)
     val notice = _notice.asStateFlow()
+
+    private val _pendingCanonTurn = MutableStateFlow<String?>(null)
+    val pendingCanonTurn = _pendingCanonTurn.asStateFlow()
+    private var _pendingTurnProposalIds: Set<Long> = emptySet()
 
     private val _externalImportDraft = MutableStateFlow<ExternalImportDraft?>(null)
     val externalImportDraft = _externalImportDraft.asStateFlow()
@@ -284,6 +289,9 @@ class ChronicleViewModel(
                     Do not promote a character merely because their name appears often in one scene.
 
                     Extract durable canon, not every sentence. Preserve contradictions by marking Ambiguous.
+                    For every named character, determine their LAST explicitly established current location when possible.
+                    If confidently established, append the exact sentence "Currently at LOCATION_NAME." to that character's notes.
+                    If current location is unknown or only historical, do not guess.
                     Do not silently reconcile conflicting source statements.
 
                     WORLD-STATE EXTRACTION:
@@ -308,7 +316,7 @@ class ChronicleViewModel(
                         "species":"","age":"","pronouns":"","appearance":"","personality":"",
                         "backstory":"","abilities":"","equipment":"","relationship":"",
                         "affiliations":"","goals":"","fears":"","secrets":"","injuries":"",
-                        "notes":"","status":"Active","confidence":"High confidence|Needs review|Ambiguous"
+                        "notes":"","currentLocation":"","status":"Active","confidence":"High confidence|Needs review|Ambiguous"
                       }],
                       "memories":[{
                         "category":"Timeline|Lore|Relationship|Canon|Quest|World|Event",
@@ -350,10 +358,11 @@ class ChronicleViewModel(
                         messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text"))
                     )
                 )
-                _externalImportDraft.value = seedMissingLocationsFromSource(
+                val parsedDraft = seedMissingLocationsFromSource(
                     ExternalCampaignImport.parseAnalysis(raw, text),
                     text
                 )
+                _externalImportDraft.value = seedImportedCharacterPresence(parsedDraft)
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "External campaign analysis failed."
             } finally {
@@ -406,6 +415,7 @@ class ChronicleViewModel(
         viewModelScope.launch {
             try {
                 repository.approveProposal(p, edited)
+                maybeResumePendingCanonTurn()
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not approve proposal."
             }
@@ -413,23 +423,30 @@ class ChronicleViewModel(
     }
 
     fun rejectProposal(p: ChangeProposalEntity) =
-        viewModelScope.launch { repository.rejectProposal(p) }
+        viewModelScope.launch {
+            repository.rejectProposal(p)
+            maybeResumePendingCanonTurn()
+        }
 
     fun approveAll(items: List<ChangeProposalEntity>) =
         viewModelScope.launch {
             try {
                 repository.approveAll(items)
+                maybeResumePendingCanonTurn()
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not approve group."
             }
         }
 
     fun rejectAll(items: List<ChangeProposalEntity>) =
-        viewModelScope.launch { repository.rejectAll(items) }
+        viewModelScope.launch {
+            repository.rejectAll(items)
+            maybeResumePendingCanonTurn()
+        }
 
     fun sendMessage(text: String) {
         val campaign = selectedCampaign.value ?: return
-        if (text.isBlank() || _isGenerating.value) return
+        if (text.isBlank() || _isGenerating.value || _pendingCanonTurn.value != null) return
 
         viewModelScope.launch {
             _isGenerating.value = true
@@ -437,108 +454,112 @@ class ChronicleViewModel(
 
             try {
                 repository.addMessage(campaign.id, "user", text)
+                val pendingBeforeTurn = repository.pendingProposalIds(campaign.id)
 
-                // v0.10.1.1 fast path: explicit character movement/presence is proposed
-                // deterministically instead of depending only on the general AI analyzer.
+                // Phase 1: deterministic canon detection.
                 repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
-
-                // v0.9.3 fast path: explicit quest commands create/update Review proposals
-                // without waiting for the general AI continuity analyzer.
                 repository.proposeExplicitQuestCommand(campaign.id, text)
 
-                val context = buildCampaignContext(campaign)
-
-                val history = messages.value
-                    .takeLast(40)
-                    .map { ProviderMessage(it.role, it.content) }
-                    .let { existing ->
-                        if (
-                            existing.lastOrNull()?.role == "user" &&
-                            existing.lastOrNull()?.content == text
-                        ) existing
-                        else existing + ProviderMessage("user", text)
-                    }
-
-                val system = """
-                    You are Chronicle's campaign storyteller and GM.
-
-                    CANONICAL AUTHORITY
-                    - The Chronicle database character records supplied in context are the ONLY authoritative character sheets.
-                    - Never maintain a second independent character sheet inside chat.
-                    - Never silently rewrite a canonical character record in narration.
-                    - If the user asks you to CREATE or REGISTER a new character sheet, do NOT print a full authoritative sheet in chat.
-                      Briefly acknowledge the request and continue naturally; Chronicle's separate Review system will propose the real character record.
-                    - If the user asks to SHOW an existing character sheet, mirror ONLY the canonical database record supplied in context.
-                      Label it as a read-only view and do not invent values for blank fields.
-                    - Character changes happen through story events and Chronicle Review, not by editing an unofficial chat sheet.
-
-                    CHARACTER PRESENCE AUTHORITY
-                    - Characters may occupy different locations at the same time.
-                    - Never teleport every character to the campaign current location.
-                    - Respect explicit "Currently at LOCATION." canonical notes supplied in character records.
-                    - If a companion stays behind, continue treating them as being at that prior location until canon moves them.
-
-                    REVIEW AUTHORITY
-                    - Review is a separate app UI. Chat is NEVER the approval interface.
-                    - NEVER ask the player to approve, confirm, authorize, accept, or reject a proposal inside Chat.
-                    - NEVER pause the story waiting for an approval response in Chat.
-                    - NEVER say a proposal was approved merely because the player answered you in Chat.
-                    - When a user establishes a canonical change, acknowledge it naturally and continue the story when appropriate.
-                      Chronicle's automatic Review pipeline handles persistence separately.
-
-                    WORLD EXPLORER AUTHORITY
-                    - Chronicle's approved Location records power the World Explorer.
-                    - Never claim the party visited a place unless the story actually establishes arrival/presence.
-                    - Use exact canonical location names from context when referring to known places.
-                    - The map layout is user presentation state; do not narratively move or rearrange map nodes.
-
-                    QUEST / WORLD AUTHORITY
-                    - Chronicle's World > Quests records are the ONLY authoritative quest tracker.
-                    - If the user asks to add/start/create/complete/fail/pause/update a quest, do NOT create or maintain an authoritative quest card/list/JSON/block inside Chat.
-                    - Briefly acknowledge the story/command naturally. Chronicle Review handles the actual quest record.
-                    - If the user asks to SHOW quests, mirror only the canonical quest records supplied in context as a read-only view.
-                    - Never claim a quest was saved merely because you formatted it in Chat.
-
-                    STORY RULES
-                    Preserve established canon, causal continuity, character autonomy, and consequences.
-                    Never import facts from another campaign.
-                    Treat supplied campaign and canonical character data as authoritative.
-                    Cast Tier indicates narrative importance, not moral worth.
-                    If something is not established here, do not pretend you remember it.
-                """.trimIndent()
-
                 val provider: AiProvider =
-                    if (_providerSettings.value.enabled) {
-                        OpenAiCompatibleProvider { settingsStore.load() }
-                    } else {
-                        ChronicleDemoProvider()
-                    }
+                    if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
+                    else ChronicleDemoProvider()
 
-                val reply = provider.generate(
-                    ProviderRequest(
-                        systemPrompt = system,
-                        memoryContext = context,
-                        messages = history
-                    )
-                )
-
-                repository.addMessage(campaign.id, "assistant", reply)
-
+                // Phase 1b: AI canon analysis happens BEFORE storyteller generation.
                 if (_providerSettings.value.enabled) {
-                    // v0.9.1: continuity/world analysis is part of normal real-AI play.
-                    // The manual Scan button remains available as a recovery/re-scan tool.
                     scanForProposals(
-                        campaign,
-                        repository.buildAutomationContextSnapshot(campaign),
-                        text,
-                        reply,
-                        provider
+                        campaign = campaign,
+                        context = repository.buildAutomationContextSnapshot(campaign),
+                        userText = text,
+                        assistantReply = "",
+                        provider = provider
                     )
                 }
+
+                val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
+                if (newPending.isNotEmpty()) {
+                    _pendingTurnProposalIds = newPending
+                    _pendingCanonTurn.value = text
+                    _notice.value = "${newPending.size} canon change${if (newPending.size == 1) "" else "s"} need Review before the story continues."
+                    return@launch
+                }
+
+                generateStoryReply(campaign, text, provider)
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
             } finally {
                 _isGenerating.value = false
+            }
+        }
+    }
+
+    private suspend fun generateStoryReply(
+        campaign: CampaignEntity,
+        userText: String,
+        provider: AiProvider
+    ) {
+        val freshCampaign = repository.campaignById(campaign.id) ?: campaign
+        val context = repository.buildCanonicalContextSnapshot(freshCampaign)
+        val history = repository.recentMessages(campaign.id, 40)
+            .map { ProviderMessage(it.role, it.content) }
+
+        val system = """
+            You are Chronicle's campaign storyteller and GM.
+
+            CANON-FIRST AUTHORITY
+            - Chronicle Review has already resolved any persistent changes that required player approval for this turn.
+            - The fresh database snapshot supplied in context is the ONLY source of canonical truth.
+            - Narrate from accepted canon. Never resurrect rejected, superseded, or unapproved proposed facts.
+            - Review is a separate app UI. NEVER ask the player to approve, confirm, accept, authorize, or reject anything in Chat.
+            - Do not create a second character sheet, quest tracker, world-state ledger, or approval workflow inside Chat.
+
+            CHARACTER PRESENCE
+            - Characters may occupy different locations simultaneously.
+            - Respect each character's latest canonical "Currently at LOCATION." note.
+            - Never teleport companions or NPCs merely because the campaign current location changed.
+
+            WORLD / QUEST AUTHORITY
+            - Approved World, Quest, Timeline, Memory, Campaign, and Character records in context govern continuity.
+            - Use exact canonical location and quest names where possible.
+            - If a fact is absent from approved canon, do not pretend it was accepted.
+
+            STORY RULES
+            Preserve established canon, causal continuity, character autonomy, tone, and consequences.
+            Never import facts from another campaign.
+            Continue naturally from the player's latest message using the now-resolved canonical state.
+        """.trimIndent()
+
+        val reply = provider.generate(
+            ProviderRequest(
+                systemPrompt = system,
+                memoryContext = context,
+                messages = history
+            )
+        )
+        repository.addMessage(campaign.id, "assistant", reply)
+    }
+
+    private fun maybeResumePendingCanonTurn() {
+        val userText = _pendingCanonTurn.value ?: return
+        val campaign = selectedCampaign.value ?: return
+        viewModelScope.launch {
+            // Approval/rejection writes happen immediately, but group operations may resolve several
+            // rows in sequence. Briefly let the transaction settle before deciding to resume.
+            delay(120)
+            val unresolvedNew = repository.pendingProposalIds(campaign.id).intersect(_pendingTurnProposalIds)
+            if (unresolvedNew.isNotEmpty()) return@launch
+
+            _pendingCanonTurn.value = null
+            _isGenerating.value = true
+            try {
+                val provider: AiProvider =
+                    if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
+                    else ChronicleDemoProvider()
+                generateStoryReply(campaign, userText, provider)
+            } catch (t: Throwable) {
+                _lastError.value = t.message ?: "Could not resume the pending story turn."
+            } finally {
+                _isGenerating.value = false
+                _pendingTurnProposalIds = emptySet()
             }
         }
     }
@@ -599,6 +620,7 @@ class ChronicleViewModel(
                   use character_new. The storyteller's chat response is NOT the character sheet.
                 - Do not treat a character sheet printed by the assistant in chat as authoritative evidence by itself.
                 - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
+                - CANON-FIRST MODE: the storyteller reply may be absent. Detect all durable changes explicitly established by the player message before narration.
 
                 EVIDENCE TYPE
                 Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact. If the user supplies the fact and the assistant only reformats or repeats it, it is Player Confirmed, NOT Assistant Only.
@@ -763,7 +785,7 @@ class ChronicleViewModel(
                     messages = listOf(
                         ProviderMessage(
                             "user",
-                            "LATEST USER MESSAGE:\n$userText\n\nLATEST STORYTELLER REPLY:\n$assistantReply"
+                            "LATEST USER MESSAGE:\n$userText\n\nSTORYTELLER REPLY:\n${assistantReply.ifBlank { "(not generated yet; detect proposals from the player message and fresh canonical context only)" }}"
                         )
                     )
                 )

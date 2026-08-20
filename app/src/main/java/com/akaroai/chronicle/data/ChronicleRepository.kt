@@ -19,6 +19,17 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     fun quests(id: Long) = dao.quests(id)
     fun timelineEvents(id: Long) = dao.timelineEvents(id)
 
+    suspend fun campaignById(id: Long): CampaignEntity? = dao.campaignById(id)
+
+    suspend fun pendingProposalIds(campaignId: Long): Set<Long> =
+        dao.proposalsSnapshot(campaignId)
+            .filter { it.status == "Pending" }
+            .map { it.id }
+            .toSet()
+
+    suspend fun recentMessages(campaignId: Long, limit: Int): List<MessageEntity> =
+        dao.messagesSnapshot(campaignId).takeLast(limit.coerceAtLeast(1))
+
 
     suspend fun createCampaign(name: String, description: String = "") =
         dao.insertCampaign(CampaignEntity(name = name.trim(), description = description.trim()))
