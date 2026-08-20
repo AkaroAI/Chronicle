@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.data.ExternalCampaignImport
 import com.akaroai.chronicle.data.ExternalImportDraft
+import com.akaroai.chronicle.data.ImportedLocationDraft
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
 import kotlinx.coroutines.Dispatchers
@@ -95,6 +96,82 @@ class ChronicleViewModel(
                 }
             }
         }
+    }
+
+    private fun seedMissingLocationsFromSource(
+        draft: ExternalImportDraft,
+        sourceText: String
+    ): ExternalImportDraft {
+        fun normalize(value: String): String = value.lowercase()
+            .replace(Regex("""\bthe\b"""), " ")
+            .replace(Regex("""\beastern\b"""), " east ")
+            .replace(Regex("""\bwestern\b"""), " west ")
+            .replace(Regex("""\bnorthern\b"""), " north ")
+            .replace(Regex("""\bsouthern\b"""), " south ")
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
+            .replace(Regex("""\s+"""), " ")
+
+        fun displayName(raw: String): String {
+            val cleaned = raw.trim().trim('.', ',', ';', ':', '"', '\'')
+                .replace(Regex("""(?i)^the\s+"""), "")
+                .replace(Regex("""(?i)^eastern\s+"""), "East ")
+                .replace(Regex("""(?i)^western\s+"""), "West ")
+                .replace(Regex("""(?i)^northern\s+"""), "North ")
+                .replace(Regex("""(?i)^southern\s+"""), "South ")
+            return cleaned.split(Regex("""\s+""")).joinToString(" ") { word ->
+                if (word.isBlank()) word
+                else word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+            }
+        }
+
+        val placeNoun = Regex(
+            """(?i)\b(gate|village|town|city|inn|observatory|academy|chapel|temple|mine|harbor|castle|palace|fortress|tower|bridge|road|woods|wood|forest|ruins|ruin|camp|district|mountain|pass|valley|island|port)\b"""
+        )
+
+        val candidates = linkedSetOf<String>()
+        if (draft.currentLocation.isNotBlank()) candidates += draft.currentLocation
+
+        Regex("""(?im)^\s*Current Location\s*:\s*([^\r\n]+)""")
+            .findAll(sourceText)
+            .forEach { candidates += it.groupValues[1].trim() }
+
+        val directionalPlace = Regex(
+            """(?i)\b(?:to|toward|towards|at|into|through|near|outside|inside|in)\s+(?:the\s+)?((?:eastern|western|northern|southern|east|west|north|south)\s+(?:gate|road|woods?|forest|bridge|tower|ruins?|village|town|city|observatory|academy|chapel|temple|mine|harbor|inn|castle|palace|fortress))\b"""
+        )
+        directionalPlace.findAll(sourceText).forEach {
+            candidates += displayName(it.groupValues[1])
+        }
+
+        val namedPlace = Regex(
+            """\b([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,3}\s+(?:Gate|Village|Town|City|Inn|Observatory|Academy|Chapel|Temple|Mine|Harbor|Castle|Palace|Fortress|Tower|Bridge|Road|Woods|Forest|Ruins|Camp|District|Mountain|Pass|Valley|Island|Port))\b"""
+        )
+        namedPlace.findAll(sourceText).forEach {
+            candidates += displayName(it.groupValues[1])
+        }
+
+        val merged = draft.locations.toMutableList()
+        val identities = merged.map { normalize(it.name) }.toMutableSet()
+
+        for (raw in candidates) {
+            val name = displayName(raw)
+            if (name.isBlank() || !placeNoun.containsMatchIn(name)) continue
+            val identity = normalize(name)
+            if (identity.isBlank() || identity in identities) continue
+
+            merged += ImportedLocationDraft(
+                name = name,
+                description = "Recovered directly from the source text during import; verify this location in Import Review.",
+                discoveryState = if (
+                    sourceText.contains(Regex("""(?i)\b(arrive|arrives|arrived|rush|rushes|rushed|enter|enters|entered|reach|reaches|reached|at)\b.{0,45}\b${Regex.escape(name)}\b"""))
+                ) "Visited" else "Discovered",
+                status = "Active",
+                confidence = "Needs review"
+            )
+            identities += identity
+        }
+
+        return draft.copy(locations = merged)
     }
 
     fun clearError() { _lastError.value = null }
@@ -273,7 +350,10 @@ class ChronicleViewModel(
                         messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text"))
                     )
                 )
-                _externalImportDraft.value = ExternalCampaignImport.parseAnalysis(raw, text)
+                _externalImportDraft.value = seedMissingLocationsFromSource(
+                    ExternalCampaignImport.parseAnalysis(raw, text),
+                    text
+                )
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "External campaign analysis failed."
             } finally {
@@ -398,6 +478,14 @@ class ChronicleViewModel(
                     - Respect explicit "Currently at LOCATION." canonical notes supplied in character records.
                     - If a companion stays behind, continue treating them as being at that prior location until canon moves them.
 
+                    REVIEW AUTHORITY
+                    - Review is a separate app UI. Chat is NEVER the approval interface.
+                    - NEVER ask the player to approve, confirm, authorize, accept, or reject a proposal inside Chat.
+                    - NEVER pause the story waiting for an approval response in Chat.
+                    - NEVER say a proposal was approved merely because the player answered you in Chat.
+                    - When a user establishes a canonical change, acknowledge it naturally and continue the story when appropriate.
+                      Chronicle's automatic Review pipeline handles persistence separately.
+
                     WORLD EXPLORER AUTHORITY
                     - Chronicle's approved Location records power the World Explorer.
                     - Never claim the party visited a place unless the story actually establishes arrival/presence.
@@ -471,6 +559,11 @@ class ChronicleViewModel(
         } ?: return
 
         viewModelScope.launch {
+            // Manual Scan must use the same deterministic safety paths as normal chat.
+            // This makes Scan a genuine recovery tool instead of an AI-only retry.
+            repository.proposeExplicitCharacterMovementCommand(campaign.id, lastUser.content)
+            repository.proposeExplicitQuestCommand(campaign.id, lastUser.content)
+
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
                 campaign,

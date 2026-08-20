@@ -279,10 +279,48 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         for (clause in clauses) {
             if (!movementWords.containsMatchIn(clause)) continue
 
-            val destination = locations
+            val knownDestination = locations
                 .sortedByDescending { it.name.length }
-                .firstOrNull { clause.contains(it.name, ignoreCase = true) }
-                ?: continue
+                .firstOrNull { locationMatchesClause(it.name, clause) }
+
+            val destinationName = knownDestination?.name ?: inferLocationFromMovementClause(clause) ?: continue
+
+            // If explicit movement names a place that an older/imported campaign missed,
+            // propose the missing location too instead of silently dropping character presence.
+            if (knownDestination == null) {
+                val alreadyPendingLocation = dao.proposalsSnapshot(campaignId).any { proposal ->
+                    proposal.status == "Pending" &&
+                        proposal.targetType == "location_upsert" &&
+                        runCatching {
+                            normalizeLocationIdentity(JSONObject(proposal.proposedChanges).optString("name")) ==
+                                normalizeLocationIdentity(destinationName)
+                        }.getOrDefault(false)
+                }
+                if (!alreadyPendingLocation) {
+                    addProposal(
+                        ChangeProposalEntity(
+                            campaignId = campaignId,
+                            summary = "Add location: $destinationName",
+                            targetType = "location_upsert",
+                            proposedChanges = JSONObject()
+                                .put("name", destinationName)
+                                .put("region", "")
+                                .put("parentLocation", "")
+                                .put("description", "Location explicitly established during character movement.")
+                                .put("discoveryState", "Visited")
+                                .put("status", "Active")
+                                .put("notes", "")
+                                .toString(),
+                            reason = "Explicit player movement references a location missing from structured world state: $clause",
+                            priority = "Normal",
+                            groupType = "World",
+                            groupLabel = destinationName,
+                            changeMode = "Replace",
+                            evidenceType = "Player Confirmed"
+                        )
+                    )
+                }
+            }
 
             val verbMatch = movementWords.find(clause)
             val subjectWindow = if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
@@ -297,7 +335,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             if (subjects.isEmpty()) continue
 
             for (character in subjects) {
-                val note = "Currently at ${destination.name}."
+                val note = "Currently at $destinationName."
 
                 val pendingSame = dao.proposalsSnapshot(campaignId).any { proposal ->
                     proposal.status == "Pending" &&
@@ -312,12 +350,12 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 if (pendingSame) continue
 
                 val currentRecorded = latestRecordedCharacterLocation(character.notes)
-                if (currentRecorded.equals(destination.name, ignoreCase = true)) continue
+                if (normalizeLocationIdentity(currentRecorded) == normalizeLocationIdentity(destinationName)) continue
 
                 addProposal(
                     ChangeProposalEntity(
                         campaignId = campaignId,
-                        summary = "${character.name} → ${destination.name}",
+                        summary = "${character.name} → $destinationName",
                         targetType = "character_update",
                         targetId = character.id,
                         proposedChanges = JSONObject()
@@ -336,6 +374,55 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
 
         return created
+    }
+
+    private fun normalizeLocationIdentity(value: String): String {
+        return value.lowercase()
+            .replace(Regex("""\bthe\b"""), " ")
+            .replace(Regex("""\beastern\b"""), " east ")
+            .replace(Regex("""\bwestern\b"""), " west ")
+            .replace(Regex("""\bnorthern\b"""), " north ")
+            .replace(Regex("""\bsouthern\b"""), " south ")
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
+            .replace(Regex("""\s+"""), " ")
+    }
+
+    private fun inferLocationFromMovementClause(clause: String): String? {
+        fun display(raw: String): String {
+            return raw.trim().trim('.', ',', ';', ':', '"', '\'')
+                .replace(Regex("""(?i)^the\s+"""), "")
+                .replace(Regex("""(?i)^eastern\s+"""), "East ")
+                .replace(Regex("""(?i)^western\s+"""), "West ")
+                .replace(Regex("""(?i)^northern\s+"""), "North ")
+                .replace(Regex("""(?i)^southern\s+"""), "South ")
+                .split(Regex("""\s+"""))
+                .joinToString(" ") { word ->
+                    word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                }
+        }
+
+        val placeNoun =
+            """gate|village|town|city|inn|observatory|academy|chapel|temple|mine|harbor|castle|palace|fortress|tower|bridge|road|woods?|forest|ruins?|camp|district|mountain|pass|valley|island|port"""
+
+        val directional = Regex(
+            """(?i)\b(?:to|toward|towards|at|into|through|near|outside|inside|in)\s+(?:the\s+)?((?:eastern|western|northern|southern|east|west|north|south)\s+(?:$placeNoun))\b"""
+        ).find(clause)?.groupValues?.getOrNull(1)
+        if (!directional.isNullOrBlank()) return display(directional)
+
+        val named = Regex(
+            """\b([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,3}\s+(?:Gate|Village|Town|City|Inn|Observatory|Academy|Chapel|Temple|Mine|Harbor|Castle|Palace|Fortress|Tower|Bridge|Road|Woods|Forest|Ruins|Camp|District|Mountain|Pass|Valley|Island|Port))\b"""
+        ).find(clause)?.groupValues?.getOrNull(1)
+        if (!named.isNullOrBlank()) return display(named)
+
+        return null
+    }
+
+    private fun locationMatchesClause(locationName: String, clause: String): Boolean {
+        val canonical = normalizeLocationIdentity(locationName)
+        val normalizedClause = normalizeLocationIdentity(clause)
+        if (canonical.isBlank()) return false
+        return normalizedClause.contains(canonical)
     }
 
     private fun latestRecordedCharacterLocation(notes: String): String {
