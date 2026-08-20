@@ -478,8 +478,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             return
         }
 
-        // Exact duplicate pending proposals are noise; ignore them.
-        if (oldPending.any { normalizeJson(it.proposedChanges) == normalizeJson(proposal.proposedChanges) }) {
+        // Same canonical target + same effective change = one Review item.
+        // Compare JSON semantically so field order / formatting cannot create a false duplicate.
+        if (oldPending.any { sameEffectiveChange(it.proposedChanges, proposal.proposedChanges) }) {
             return
         }
 
@@ -976,8 +977,30 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }.getOrDefault("${p.targetType}|${p.targetId ?: 0}")
     }
 
-    private fun normalizeJson(raw: String): String =
-        runCatching { JSONObject(raw).toString() }.getOrDefault(raw.trim())
+    private fun sameEffectiveChange(a: String, b: String): Boolean =
+        canonicalJson(a) == canonicalJson(b)
+
+    private fun canonicalJson(raw: String): String = runCatching {
+        canonicalValue(JSONObject(raw)).toString()
+    }.getOrDefault(raw.trim())
+
+    private fun canonicalValue(value: Any?): Any? = when (value) {
+        null, JSONObject.NULL -> JSONObject.NULL
+        is JSONObject -> {
+            val out = JSONObject()
+            value.keys().asSequence().toList().sorted().forEach { key ->
+                out.put(key, canonicalValue(value.opt(key)))
+            }
+            out
+        }
+        is org.json.JSONArray -> {
+            org.json.JSONArray().apply {
+                for (i in 0 until value.length()) put(canonicalValue(value.opt(i)))
+            }
+        }
+        is String -> value.trim()
+        else -> value
+    }
 
     private fun JSONObject.valueOr(key: String, fallback: String): String {
         if (!has(key) || isNull(key)) return fallback
