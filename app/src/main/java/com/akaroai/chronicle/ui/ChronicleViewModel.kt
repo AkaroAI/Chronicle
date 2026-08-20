@@ -87,6 +87,9 @@ class ChronicleViewModel(
     val pendingCanonTurn = _pendingCanonTurn.asStateFlow()
     private var _pendingTurnProposalIds: Set<Long> = emptySet()
 
+    private val _turnPhase = MutableStateFlow("IDLE")
+    val turnPhase = _turnPhase.asStateFlow()
+
     private val _externalImportDraft = MutableStateFlow<ExternalImportDraft?>(null)
     val externalImportDraft = _externalImportDraft.asStateFlow()
 
@@ -222,7 +225,18 @@ class ChronicleViewModel(
                     }
                 }
 
-                val latest = candidates.maxByOrNull { it.first }?.second
+                val sourceLatest = candidates.maxByOrNull { it.first }?.second
+                val timelineFallback = draft.timelineEvents
+                    .lastOrNull { event ->
+                        event.location.isNotBlank() &&
+                            event.involvedCharacters.contains(character.name, ignoreCase = true)
+                    }
+                    ?.location
+                    ?.let { raw ->
+                        canonicalLocations[normalize(raw)]?.name ?: raw
+                    }
+
+                val latest = sourceLatest ?: timelineFallback
                 if (latest.isNullOrBlank()) {
                     character
                 } else {
@@ -230,10 +244,10 @@ class ChronicleViewModel(
                         notes = listOf(character.notes.trim(), "Currently at $latest.")
                             .filter { it.isNotBlank() }
                             .joinToString("\n"),
-                        confidence = if (character.confidence == "Ambiguous") {
-                            "Ambiguous"
-                        } else {
-                            "Needs review"
+                        confidence = when {
+                            character.confidence == "Ambiguous" -> "Ambiguous"
+                            sourceLatest == null -> "Needs review"
+                            else -> "Needs review"
                         }
                     )
                 }
@@ -419,7 +433,8 @@ class ChronicleViewModel(
                     ProviderRequest(
                         systemPrompt = system,
                         memoryContext = "",
-                        messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text"))
+                        messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text")),
+                        temperature = 0.2
                     )
                 )
                 val parsedDraft = seedMissingLocationsFromSource(
@@ -510,10 +525,15 @@ class ChronicleViewModel(
 
     fun sendMessage(text: String) {
         val campaign = selectedCampaign.value ?: return
-        if (text.isBlank() || _isGenerating.value || _pendingCanonTurn.value != null) return
+        if (text.isBlank() || _isGenerating.value) return
+        if (_pendingCanonTurn.value != null) {
+            _notice.value = "This turn is waiting for Review. Resolve its canon proposals before sending another story action."
+            return
+        }
 
         viewModelScope.launch {
             _isGenerating.value = true
+            _turnPhase.value = "ANALYZING_CANON"
             _lastError.value = null
 
             try {
@@ -543,15 +563,21 @@ class ChronicleViewModel(
                 if (newPending.isNotEmpty()) {
                     _pendingTurnProposalIds = newPending
                     _pendingCanonTurn.value = text
+                    _turnPhase.value = "AWAITING_REVIEW"
                     _notice.value = "${newPending.size} canon change${if (newPending.size == 1) "" else "s"} need Review before the story continues."
                     return@launch
                 }
 
+                _turnPhase.value = "GENERATING_STORY"
                 generateStoryReply(campaign, text, provider)
+                _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
             } finally {
                 _isGenerating.value = false
+                if (_pendingCanonTurn.value == null && _turnPhase.value != "AWAITING_REVIEW") {
+                    _turnPhase.value = "IDLE"
+                }
             }
         }
     }
@@ -571,6 +597,9 @@ class ChronicleViewModel(
 
             CANON-FIRST AUTHORITY
             - Chronicle Review has already resolved any persistent changes that required player approval for this turn.
+            - RESOLVED CANON OVERRIDES NARRATIVE PREFERENCE. You may never veto, reverse, reinterpret, or undo an approved state.
+            - Character autonomy affects emotion/dialogue/reaction WITHIN approved canon; it does not override approved location, quest, relationship, injury, or world state.
+            - If a character is canonically at LOCATION A, do not narrate them traveling to or appearing at LOCATION B unless the approved player action already moved them there.
             - The fresh database snapshot supplied in context is the ONLY source of canonical truth.
             - Narrate from accepted canon. Never resurrect rejected, superseded, or unapproved proposed facts.
             - Review is a separate app UI. NEVER ask the player to approve, confirm, accept, authorize, or reject anything in Chat.
@@ -578,7 +607,7 @@ class ChronicleViewModel(
 
             CHARACTER PRESENCE
             - Characters may occupy different locations simultaneously.
-            - Respect each character's latest canonical "Currently at LOCATION." note.
+            - Respect each character's structured currentLocation field. The legacy "Currently at LOCATION." note is only a compatibility mirror.
             - Never teleport companions or NPCs merely because the campaign current location changed.
 
             WORLD / QUEST AUTHORITY
@@ -592,13 +621,34 @@ class ChronicleViewModel(
             Continue naturally from the player's latest message using the now-resolved canonical state.
         """.trimIndent()
 
-        val reply = provider.generate(
-            ProviderRequest(
-                systemPrompt = system,
-                memoryContext = context,
-                messages = history
-            )
+        val request = ProviderRequest(
+            systemPrompt = system,
+            memoryContext = context,
+            messages = history,
+            temperature = 0.75
         )
+
+        var reply = provider.generate(request)
+        var validation = validateStoryReply(campaign.id, reply)
+
+        if (!validation.ok) {
+            _turnPhase.value = "VALIDATING_STORY"
+            val repairSystem = system + """
+
+                OUTPUT REPAIR
+                Your previous draft was rejected by Chronicle's validator.
+                Reason: ${validation.reason}
+                Regenerate the scene once. Follow the approved canonical snapshot exactly.
+                Do not mention this validation, do not apologize, and do not discuss proposals.
+            """.trimIndent()
+            reply = provider.generate(request.copy(systemPrompt = repairSystem))
+            validation = validateStoryReply(campaign.id, reply)
+        }
+
+        if (!validation.ok) {
+            error("Story generation was rejected before it could enter campaign history: ${validation.reason}")
+        }
+
         repository.addMessage(campaign.id, "assistant", reply)
     }
 
@@ -614,11 +664,14 @@ class ChronicleViewModel(
 
             _pendingCanonTurn.value = null
             _isGenerating.value = true
+            _turnPhase.value = "APPLYING_CANON"
             try {
                 val provider: AiProvider =
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
+                _turnPhase.value = "GENERATING_STORY"
                 generateStoryReply(campaign, userText, provider)
+                _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not resume the pending story turn."
             } finally {
@@ -769,6 +822,7 @@ class ChronicleViewModel(
                   "secrets":"",
                   "injuries":"",
                   "notes":"",
+                  "currentLocation":"",
                   "status":"Active",
                   "castTier":"Main|Secondary|Supporting|Background"
                 }
@@ -778,7 +832,7 @@ class ChronicleViewModel(
                 changes={"fields":{"fieldName":"NEW OR ADDITIVE VALUE"}}
                 Allowed fields: name, aliases, species, age, pronouns, appearance, personality,
                 backstory, abilities, equipment, relationship, affiliations, goals, fears,
-                secrets, injuries, notes, status.
+                secrets, injuries, notes, currentLocation, status.
 
                 memory_new
                 changes={"category":"Timeline|Lore|Relationship|Canon|Quest","title":"...","content":"..."}
@@ -792,11 +846,12 @@ class ChronicleViewModel(
                 CHARACTER PRESENCE RULES
                 - Track independently where named characters currently are when the latest exchange explicitly establishes it.
                 - Character location is NOT automatically identical to campaign currentLocation; split parties and NPCs may remain elsewhere.
-                - For an existing character whose location changes, propose character_update and append a concise notes statement using the exact form "Currently at LOCATION_NAME.".
+                - For an existing character whose location changes, propose character_update with fields.currentLocation="EXACT LOCATION_NAME".
+                - Also append the concise notes statement "Currently at LOCATION_NAME." for backward-compatible history.
                 - When a character explicitly stays behind, preserve that character at the old location instead of moving everyone with the party.
                 - Do not infer an NPC's current location merely because they are associated with a place historically.
                 - When multiple named characters travel together, evaluate each character independently.
-                - This canonical note powers World Explorer character badges in v0.10.1.
+                - The structured currentLocation field is authoritative; the note mirrors it for backward-compatible World Explorer rendering.
 
                 WORLD EXPLORER RULES
                 - The approved Location records power the visual World Explorer map.
@@ -851,7 +906,8 @@ class ChronicleViewModel(
                             "user",
                             "LATEST USER MESSAGE:\n$userText\n\nSTORYTELLER REPLY:\n${assistantReply.ifBlank { "(not generated yet; detect proposals from the player message and fresh canonical context only)" }}"
                         )
-                    )
+                    ),
+                    temperature = 0.15
                 )
             )
 
@@ -900,6 +956,56 @@ class ChronicleViewModel(
         }
     }
 
+    private data class StoryValidation(val ok: Boolean, val reason: String = "")
+
+    private suspend fun validateStoryReply(campaignId: Long, reply: String): StoryValidation {
+        val clean = reply.trim()
+        if (clean.length < 12) return StoryValidation(false, "The response was empty or too short.")
+
+        val tokens = Regex("""[A-Za-z0-9']+""").findAll(clean.lowercase()).map { it.value }.toList()
+        if (tokens.size >= 30) {
+            val top = tokens.groupingBy { it }.eachCount().maxByOrNull { it.value }
+            if (top != null && top.value.toDouble() / tokens.size.toDouble() > 0.28) {
+                return StoryValidation(false, "The response degenerated into pathological word repetition.")
+            }
+            val windows = tokens.windowed(4)
+            if (windows.size >= 8) {
+                val repeatedWindow = windows.groupingBy { it.joinToString(" ") }.eachCount().maxOfOrNull { it.value } ?: 0
+                if (repeatedWindow >= 4) {
+                    return StoryValidation(false, "The response repeated the same phrase excessively.")
+                }
+            }
+        }
+
+        val characters = repository.charactersSnapshot(campaignId)
+        val locations = repository.locationsSnapshot(campaignId)
+        val movement = """(?:go(?:es|ne)?|went|travel(?:s|ed)?|head(?:s|ed)?|move(?:s|d)?|follow(?:s|ed)?|join(?:s|ed)?|arrive(?:s|d)?|return(?:s|ed)?)"""
+
+        for (character in characters) {
+            val canonical = character.currentLocation.ifBlank {
+                Regex("""(?i)Currently at\s+([^.\n]+)\.""")
+                    .findAll(character.notes).lastOrNull()
+                    ?.groupValues?.getOrNull(1)?.trim().orEmpty()
+            }
+            if (canonical.isBlank()) continue
+
+            for (location in locations) {
+                if (location.name.equals(canonical, ignoreCase = true)) continue
+                val contradiction = Regex(
+                    """(?is)\b${Regex.escape(character.name)}\b.{0,90}\b$movement\b.{0,90}\b${Regex.escape(location.name)}\b"""
+                )
+                if (contradiction.containsMatchIn(clean)) {
+                    return StoryValidation(
+                        false,
+                        "${character.name} is approved at $canonical, but the draft moved them to ${location.name}."
+                    )
+                }
+            }
+        }
+
+        return StoryValidation(true)
+    }
+
     private fun buildCampaignContext(campaign: CampaignEntity): String = buildString {
         appendLine("CAMPAIGN: ${campaign.name}")
         if (campaign.description.isNotBlank()) appendLine("Description: ${campaign.description}")
@@ -939,7 +1045,7 @@ class ChronicleViewModel(
                         "personality=${c.personality} | backstory=${c.backstory} | abilities=${c.abilities} | " +
                         "equipment=${c.equipment} | relationship=${c.relationship} | affiliations=${c.affiliations} | " +
                         "goals=${c.goals} | fears=${c.fears} | secrets=${c.secrets} | injuries=${c.injuries} | " +
-                        "notes=${c.notes} | status=${c.status}"
+                        "currentLocation=${c.currentLocation} | notes=${c.notes} | status=${c.status}"
                 )
             }
         }

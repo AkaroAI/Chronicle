@@ -18,7 +18,8 @@ data class ProviderMessage(
 data class ProviderRequest(
     val systemPrompt: String,
     val memoryContext: String,
-    val messages: List<ProviderMessage>
+    val messages: List<ProviderMessage>,
+    val temperature: Double = 0.7
 )
 
 interface AiProvider {
@@ -78,7 +79,7 @@ class OpenAiCompatibleProvider(
         val payload = JSONObject()
             .put("model", settings.model)
             .put("messages", messages)
-            .put("temperature", 0.9)
+            .put("temperature", request.temperature.coerceIn(0.0, 1.5))
             .put("stream", false)
 
         val httpRequest = Request.Builder()

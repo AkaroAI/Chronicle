@@ -66,7 +66,7 @@ data class MemoryEntity(
         childColumns = ["campaignId"],
         onDelete = ForeignKey.CASCADE
     )],
-    indices = [Index("campaignId"), Index("castTier")]
+    indices = [Index("campaignId"), Index("castTier"), Index("currentLocation")]
 )
 data class CharacterEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -88,6 +88,7 @@ data class CharacterEntity(
     val secrets: String = "",
     val injuries: String = "",
     val notes: String = "",
+    val currentLocation: String = "",
     val status: String = "Active",
     val castTier: String = "Supporting",
     val integrityMode: String = "Balanced",
@@ -126,7 +127,6 @@ data class ChangeProposalEntity(
     val supersededById: Long? = null,
     val createdAt: Long = System.currentTimeMillis()
 )
-
 
 @Entity(
     tableName = "locations",

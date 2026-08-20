@@ -25,7 +25,7 @@ data class ChronicleBackupData(
 
 object ChronicleBackup {
     const val FORMAT_NAME = "chronicle"
-    const val FORMAT_VERSION = 3
+    const val FORMAT_VERSION = 4
 
     fun write(data: ChronicleBackupData, output: OutputStream) {
         ZipOutputStream(output.buffered()).use { zip ->
@@ -140,8 +140,9 @@ object ChronicleBackup {
         .put("abilities", c.abilities).put("equipment", c.equipment)
         .put("relationship", c.relationship).put("affiliations", c.affiliations)
         .put("goals", c.goals).put("fears", c.fears).put("secrets", c.secrets)
-        .put("injuries", c.injuries).put("notes", c.notes).put("status", c.status)
-        .put("castTier", c.castTier)
+        .put("injuries", c.injuries).put("notes", c.notes)
+        .put("currentLocation", c.currentLocation)
+        .put("status", c.status).put("castTier", c.castTier)
         .put("integrityMode", c.integrityMode)
         .put("protectedFields", c.protectedFields)
         .put("createdAt", c.createdAt).put("updatedAt", c.updatedAt)
@@ -156,7 +157,14 @@ object ChronicleBackup {
         relationship = o.optString("relationship"), affiliations = o.optString("affiliations"),
         goals = o.optString("goals"), fears = o.optString("fears"),
         secrets = o.optString("secrets"), injuries = o.optString("injuries"),
-        notes = o.optString("notes"), status = o.optString("status", "Active"),
+        notes = o.optString("notes"),
+        currentLocation = o.optString("currentLocation").ifBlank {
+            Regex("""(?i)Currently at\s+([^.\n]+)\.""")
+                .findAll(o.optString("notes"))
+                .lastOrNull()
+                ?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        },
+        status = o.optString("status", "Active"),
         castTier = o.optString("castTier", "Supporting"),
         integrityMode = o.optString("integrityMode", "Balanced"),
         protectedFields = o.optString("protectedFields"),
@@ -191,12 +199,9 @@ object ChronicleBackup {
         .put("targetType", p.targetType).put("targetId", p.targetId ?: JSONObject.NULL)
         .put("proposedChanges", p.proposedChanges).put("reason", p.reason)
         .put("priority", p.priority).put("groupType", p.groupType)
-        .put("groupLabel", p.groupLabel)
-        .put("changeMode", p.changeMode)
-        .put("evidenceType", p.evidenceType)
-        .put("integrityWarning", p.integrityWarning)
-        .put("status", p.status)
-        .put("supersededById", p.supersededById ?: JSONObject.NULL)
+        .put("groupLabel", p.groupLabel).put("changeMode", p.changeMode)
+        .put("evidenceType", p.evidenceType).put("integrityWarning", p.integrityWarning)
+        .put("status", p.status).put("supersededById", p.supersededById ?: JSONObject.NULL)
         .put("createdAt", p.createdAt)
 
     private fun proposalFromJson(o: JSONObject) = ChangeProposalEntity(
@@ -211,7 +216,6 @@ object ChronicleBackup {
         status = o.optString("status", "Pending"), supersededById = nullableLong(o, "supersededById"),
         createdAt = o.optLong("createdAt", System.currentTimeMillis())
     )
-
 
     private fun locationToJson(x: LocationEntity) = JSONObject()
         .put("name", x.name).put("region", x.region).put("parentLocation", x.parentLocation)

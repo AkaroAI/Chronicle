@@ -20,7 +20,7 @@ import com.akaroai.chronicle.model.*
         QuestEntity::class,
         TimelineEventEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class ChronicleDatabase : RoomDatabase() {
@@ -69,12 +69,10 @@ abstract class ChronicleDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE characters ADD COLUMN castTier TEXT NOT NULL DEFAULT 'Supporting'")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_characters_castTier ON characters(castTier)")
-
                 db.execSQL("ALTER TABLE change_proposals ADD COLUMN priority TEXT NOT NULL DEFAULT 'Normal'")
                 db.execSQL("ALTER TABLE change_proposals ADD COLUMN groupType TEXT NOT NULL DEFAULT 'Other'")
                 db.execSQL("ALTER TABLE change_proposals ADD COLUMN groupLabel TEXT NOT NULL DEFAULT ''")
                 db.execSQL("ALTER TABLE change_proposals ADD COLUMN supersededById INTEGER")
-
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_change_proposals_priority ON change_proposals(priority)")
                 db.execSQL("CREATE INDEX IF NOT EXISTS index_change_proposals_groupType ON change_proposals(groupType)")
             }
@@ -89,7 +87,6 @@ abstract class ChronicleDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE change_proposals ADD COLUMN integrityWarning TEXT NOT NULL DEFAULT ''")
             }
         }
-
 
         private val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -109,6 +106,16 @@ abstract class ChronicleDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE characters ADD COLUMN currentLocation TEXT NOT NULL DEFAULT ''")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_characters_currentLocation ON characters(currentLocation)")
+
+                // Existing v0.10.1 note-based locations remain readable as a fallback.
+                // New/imported/approved movement writes the structured field directly.
+            }
+        }
+
         fun get(context: Context): ChronicleDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -116,7 +123,13 @@ abstract class ChronicleDatabase : RoomDatabase() {
                     ChronicleDatabase::class.java,
                     "chronicle.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6
+                    )
                     .build()
                     .also { INSTANCE = it }
             }

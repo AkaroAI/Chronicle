@@ -30,6 +30,12 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     suspend fun recentMessages(campaignId: Long, limit: Int): List<MessageEntity> =
         dao.messagesSnapshot(campaignId).takeLast(limit.coerceAtLeast(1))
 
+    suspend fun charactersSnapshot(campaignId: Long): List<CharacterEntity> =
+        dao.charactersSnapshot(campaignId)
+
+    suspend fun locationsSnapshot(campaignId: Long): List<LocationEntity> =
+        dao.locationsSnapshot(campaignId)
+
 
     suspend fun createCampaign(name: String, description: String = "") =
         dao.insertCampaign(CampaignEntity(name = name.trim(), description = description.trim()))
@@ -175,7 +181,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             appendLine("CAMPAIGN | ${campaign.name} | location=${campaign.currentLocation} | objective=${campaign.currentObjective}")
             appendLine("CHARACTERS:")
             characters.forEach { c ->
-                appendLine("${c.name} [ID ${c.id}] [${c.castTier}] | status=${c.status} | personality=${c.personality.take(180)} | relationship=${c.relationship.take(180)} | injuries=${c.injuries.take(160)} | goals=${c.goals.take(160)}")
+                appendLine("${c.name} [ID ${c.id}] [${c.castTier}] | currentLocation=${c.currentLocation} | status=${c.status} | personality=${c.personality.take(180)} | relationship=${c.relationship.take(180)} | injuries=${c.injuries.take(160)} | goals=${c.goals.take(160)}")
             }
             appendLine("LOCATIONS:")
             locations.forEach { l ->
@@ -222,7 +228,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                         "appearance=${c.appearance} | personality=${c.personality} | backstory=${c.backstory} | " +
                         "abilities=${c.abilities} | equipment=${c.equipment} | relationship=${c.relationship} | " +
                         "affiliations=${c.affiliations} | goals=${c.goals} | fears=${c.fears} | secrets=${c.secrets} | " +
-                        "injuries=${c.injuries} | notes=${c.notes} | status=${c.status}"
+                        "injuries=${c.injuries} | currentLocation=${c.currentLocation} | notes=${c.notes} | status=${c.status}"
                 )
             }
             appendLine()
@@ -294,11 +300,31 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 .sortedByDescending { it.name.length }
                 .firstOrNull { locationMatchesClause(it.name, clause) }
 
-            val destinationName = knownDestination?.name ?: inferLocationFromMovementClause(clause) ?: continue
+            val referencedCharacter = characters
+                .filterNot { subjectWindowCandidate -> clause.startsWith(subjectWindowCandidate.name, ignoreCase = true) }
+                .sortedByDescending { it.name.length }
+                .firstOrNull { other ->
+                    clause.contains(other.name, ignoreCase = true) && other.currentLocation.isNotBlank()
+                }
+
+            val relationalIntent = referencedCharacter != null && Regex(
+                """(?i)\b(?:back\s+to|return(?:s|ed)?\s+to|go(?:es|ne)?\s+(?:back\s+)?to|head(?:s|ed)?\s+(?:back\s+)?to|join(?:s|ed)?|follow(?:s|ed)?|find(?:s|ing)?)\s+${Regex.escape(referencedCharacter.name)}\b"""
+            ).containsMatchIn(clause)
+
+            val destinationName =
+                if (relationalIntent) referencedCharacter.currentLocation
+                else knownDestination?.name
+                    ?: referencedCharacter?.currentLocation
+                    ?: inferLocationFromMovementClause(clause)
+                    ?: continue
+
+            val destinationIsKnown = locations.any {
+                normalizeLocationIdentity(it.name) == normalizeLocationIdentity(destinationName)
+            }
 
             // If explicit movement names a place that an older/imported campaign missed,
             // propose the missing location too instead of silently dropping character presence.
-            if (knownDestination == null) {
+            if (!destinationIsKnown) {
                 val alreadyPendingLocation = dao.proposalsSnapshot(campaignId).any { proposal ->
                     proposal.status == "Pending" &&
                         proposal.targetType == "location_upsert" &&
@@ -360,7 +386,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 }
                 if (pendingSame) continue
 
-                val currentRecorded = latestRecordedCharacterLocation(character.notes)
+                val currentRecorded = character.currentLocation.ifBlank {
+                    latestRecordedCharacterLocation(character.notes)
+                }
                 if (normalizeLocationIdentity(currentRecorded) == normalizeLocationIdentity(destinationName)) continue
 
                 addProposal(
@@ -370,7 +398,12 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                         targetType = "character_update",
                         targetId = character.id,
                         proposedChanges = JSONObject()
-                            .put("fields", JSONObject().put("notes", note))
+                            .put(
+                                "fields",
+                                JSONObject()
+                                    .put("currentLocation", destinationName)
+                                    .put("notes", note)
+                            )
                             .toString(),
                         reason = "Explicit character movement/presence in player message: $clause",
                         priority = "Normal",
@@ -791,6 +824,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                         secrets = changes.optString("secrets"),
                         injuries = changes.optString("injuries"),
                         notes = changes.optString("notes"),
+                        currentLocation = changes.optString("currentLocation"),
                         status = changes.optString("status", "Active").ifBlank { "Active" },
                         castTier = tier,
                         integrityMode = if (tier == "Main") "Strict" else "Balanced"
@@ -850,6 +884,10 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                         secrets = next("secrets", current.secrets),
                         injuries = next("injuries", current.injuries),
                         notes = next("notes", current.notes),
+                        currentLocation =
+                            if (fields.has("currentLocation") && !fields.isNull("currentLocation"))
+                                fields.optString("currentLocation").trim()
+                            else current.currentLocation,
                         status = next("status", current.status)
                     )
                 )
@@ -981,6 +1019,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                     secrets = c.secrets,
                     injuries = c.injuries,
                     notes = c.notes,
+                    currentLocation = latestRecordedCharacterLocation(c.notes),
                     status = c.status,
                     castTier = c.castTier,
                     integrityMode = if (c.castTier == "Main") "Strict" else "Balanced"
