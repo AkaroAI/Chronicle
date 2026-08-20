@@ -179,6 +179,70 @@ class ChronicleViewModel(
         return draft.copy(locations = merged)
     }
 
+
+    private fun seedImportedCharacterPresence(draft: ExternalImportDraft): ExternalImportDraft {
+        fun normalize(value: String): String = value.lowercase()
+            .replace(Regex("""\bthe\b"""), " ")
+            .replace(Regex("""\beastern\b"""), " east ")
+            .replace(Regex("""\bwestern\b"""), " west ")
+            .replace(Regex("""\bnorthern\b"""), " north ")
+            .replace(Regex("""\bsouthern\b"""), " south ")
+            .replace(Regex("""[^a-z0-9]+"""), " ")
+            .trim()
+            .replace(Regex("""\s+"""), " ")
+
+        val canonicalLocations = draft.locations.associateBy { normalize(it.name) }
+        val source = draft.sourceText
+
+        val updatedCharacters = draft.characters.map { character ->
+            val explicitExisting = Regex("""(?i)Currently at\s+([^.\n]+)\.""")
+                .findAll(character.notes)
+                .lastOrNull()
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                .orEmpty()
+
+            if (explicitExisting.isNotBlank()) {
+                character
+            } else {
+                val name = Regex.escape(character.name)
+                val candidates = mutableListOf<Pair<Int, String>>()
+
+                canonicalLocations.values.forEach { location ->
+                    val loc = Regex.escape(location.name)
+                    val patterns = listOf(
+                        Regex("""(?is)\b$name\b.{0,90}\b(?:travel(?:s|ed)?|go(?:es|ne)?|went|head(?:s|ed)?|move(?:s|d)?|arrive(?:s|d)?|return(?:s|ed)?|stay(?:s|ed)?|remain(?:s|ed)?|is|wait(?:s|ed|ing)?)\b.{0,45}\b(?:at|in|to|into|inside|near)?\s*(?:the\s+)?$loc\b"""),
+                        Regex("""(?is)\b$name\b.{0,45}\b(?:at|in|inside|near)\s+(?:the\s+)?$loc\b""")
+                    )
+                    patterns.forEach { pattern ->
+                        pattern.findAll(source).forEach { match ->
+                            candidates += match.range.first to location.name
+                        }
+                    }
+                }
+
+                val latest = candidates.maxByOrNull { it.first }?.second
+                if (latest.isNullOrBlank()) {
+                    character
+                } else {
+                    character.copy(
+                        notes = listOf(character.notes.trim(), "Currently at $latest.")
+                            .filter { it.isNotBlank() }
+                            .joinToString("\n"),
+                        confidence = if (character.confidence == "Ambiguous") {
+                            "Ambiguous"
+                        } else {
+                            "Needs review"
+                        }
+                    )
+                }
+            }
+        }
+
+        return draft.copy(characters = updatedCharacters)
+    }
+
     fun clearError() { _lastError.value = null }
     fun clearNotice() { _notice.value = null }
 
