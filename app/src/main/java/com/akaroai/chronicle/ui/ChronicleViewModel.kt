@@ -388,6 +388,12 @@ class ChronicleViewModel(
                       Label it as a read-only view and do not invent values for blank fields.
                     - Character changes happen through story events and Chronicle Review, not by editing an unofficial chat sheet.
 
+                    WORLD EXPLORER AUTHORITY
+                    - Chronicle's approved Location records power the World Explorer.
+                    - Never claim the party visited a place unless the story actually establishes arrival/presence.
+                    - Use exact canonical location names from context when referring to known places.
+                    - The map layout is user presentation state; do not narratively move or rearrange map nodes.
+
                     QUEST / WORLD AUTHORITY
                     - Chronicle's World > Quests records are the ONLY authoritative quest tracker.
                     - If the user asks to add/start/create/complete/fail/pause/update a quest, do NOT create or maintain an authoritative quest card/list/JSON/block inside Chat.
@@ -587,6 +593,15 @@ class ChronicleViewModel(
 
                 cast_tier_update
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
+
+                WORLD EXPLORER RULES
+                - The approved Location records power the visual World Explorer map.
+                - When the party physically arrives at a named location, propose location_upsert with discoveryState="Visited".
+                - When a place is learned about but not reached, use discoveryState="Heard About".
+                - When a place becomes known/discovered but is not clearly visited, use discoveryState="Discovered".
+                - Preserve parentLocation whenever the source establishes that one place is inside/part of another place or region.
+                - If the party's actual current location changes, ALSO propose campaign_update with currentLocation set to the exact approved location name.
+                - Do not mark a location Visited merely because an NPC mentions it.
 
                 WORLD STATE TARGETS
 
