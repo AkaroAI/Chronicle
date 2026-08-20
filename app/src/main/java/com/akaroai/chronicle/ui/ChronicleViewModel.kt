@@ -358,6 +358,10 @@ class ChronicleViewModel(
             try {
                 repository.addMessage(campaign.id, "user", text)
 
+                // v0.10.1.1 fast path: explicit character movement/presence is proposed
+                // deterministically instead of depending only on the general AI analyzer.
+                repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
+
                 // v0.9.3 fast path: explicit quest commands create/update Review proposals
                 // without waiting for the general AI continuity analyzer.
                 repository.proposeExplicitQuestCommand(campaign.id, text)

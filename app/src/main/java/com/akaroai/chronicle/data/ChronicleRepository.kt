@@ -257,6 +257,92 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
     }
 
+    suspend fun proposeExplicitCharacterMovementCommand(campaignId: Long, text: String): Int {
+        val clean = text.trim()
+        if (clean.isBlank()) return 0
+
+        val characters = dao.charactersSnapshot(campaignId)
+        val locations = dao.locationsSnapshot(campaignId)
+        if (characters.isEmpty() || locations.isEmpty()) return 0
+
+        val movementWords = Regex(
+            """(?i)\b(travel|travels|traveled|go|goes|went|head|heads|headed|move|moves|moved|arrive|arrives|arrived|return|returns|returned|stay|stays|stayed|remain|remains|remained|wait|waits|waiting|located|currently at|is at|are at|is in|are in)\b"""
+        )
+
+        val clauses = clean
+            .split(Regex("""(?<=[.!?;])\s+|\n+"""))
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+
+        var created = 0
+
+        for (clause in clauses) {
+            if (!movementWords.containsMatchIn(clause)) continue
+
+            val destination = locations
+                .sortedByDescending { it.name.length }
+                .firstOrNull { clause.contains(it.name, ignoreCase = true) }
+                ?: continue
+
+            val verbMatch = movementWords.find(clause)
+            val subjectWindow = if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
+
+            val subjects = characters
+                .filter { c ->
+                    subjectWindow.contains(c.name, ignoreCase = true) ||
+                        c.aliases.split(",").map { it.trim() }.filter { it.isNotBlank() }
+                            .any { alias -> subjectWindow.contains(alias, ignoreCase = true) }
+                }
+
+            if (subjects.isEmpty()) continue
+
+            for (character in subjects) {
+                val note = "Currently at ${destination.name}."
+
+                val pendingSame = dao.proposalsSnapshot(campaignId).any { proposal ->
+                    proposal.status == "Pending" &&
+                        proposal.targetType == "character_update" &&
+                        proposal.targetId == character.id &&
+                        runCatching {
+                            val obj = JSONObject(proposal.proposedChanges)
+                            val fields = obj.optJSONObject("fields") ?: obj
+                            fields.optString("notes").trim().equals(note, ignoreCase = true)
+                        }.getOrDefault(false)
+                }
+                if (pendingSame) continue
+
+                val currentRecorded = latestRecordedCharacterLocation(character.notes)
+                if (currentRecorded.equals(destination.name, ignoreCase = true)) continue
+
+                addProposal(
+                    ChangeProposalEntity(
+                        campaignId = campaignId,
+                        summary = "${character.name} → ${destination.name}",
+                        targetType = "character_update",
+                        targetId = character.id,
+                        proposedChanges = JSONObject()
+                            .put("fields", JSONObject().put("notes", note))
+                            .toString(),
+                        reason = "Explicit character movement/presence in player message: $clause",
+                        priority = "Normal",
+                        groupType = "Characters",
+                        groupLabel = character.name,
+                        changeMode = "Append",
+                        evidenceType = "Player Confirmed"
+                    )
+                )
+                created++
+            }
+        }
+
+        return created
+    }
+
+    private fun latestRecordedCharacterLocation(notes: String): String {
+        val regex = Regex("""(?i)Currently at\s+([^.\n]+)\.""")
+        return regex.findAll(notes).lastOrNull()?.groupValues?.getOrNull(1)?.trim().orEmpty()
+    }
+
     suspend fun proposeExplicitQuestCommand(campaignId: Long, text: String): Boolean {
         val clean = text.trim()
         val lower = clean.lowercase()
@@ -473,14 +559,21 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
         val newFields = ProposalParser.changedFieldNames(proposal.proposedChanges)
 
+        // v0.9.4: multiple detectors may discover the same canonical change during one exchange.
+        // Collapse semantically equivalent pending proposals before inserting another Review item.
+        if (proposal.targetType in worldTypes && oldPending.any { pending ->
+                proposalsAreEquivalent(pending, proposal)
+            }) {
+            return
+        }
+
         // Do not generate Review noise for world facts already represented identically in canon.
         if (proposal.targetType in worldTypes && isWorldNoOp(proposal)) {
             return
         }
 
-        // Same canonical target + same effective change = one Review item.
-        // Compare JSON semantically so field order / formatting cannot create a false duplicate.
-        if (oldPending.any { sameEffectiveChange(it.proposedChanges, proposal.proposedChanges) }) {
+        // Exact duplicate pending proposals are noise; ignore them.
+        if (oldPending.any { normalizeJson(it.proposedChanges) == normalizeJson(proposal.proposedChanges) }) {
             return
         }
 
@@ -897,6 +990,55 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         return campaignId
     }
 
+    private fun proposalsAreEquivalent(a: ChangeProposalEntity, b: ChangeProposalEntity): Boolean {
+        if (a.targetType != b.targetType) return false
+        if (proposalIdentity(a) != proposalIdentity(b)) return false
+
+        return runCatching {
+            val left = JSONObject(a.proposedChanges)
+            val right = JSONObject(b.proposedChanges)
+
+            when (a.targetType) {
+                "quest_upsert" -> {
+                    // Lifecycle/create proposals are equivalent when they target the same quest
+                    // and agree on every field both proposals explicitly set. This lets the local
+                    // quest fast-path and the AI analyzer coexist without double Review cards.
+                    val keys = setOf(
+                        "title", "status", "summary", "objective",
+                        "relatedLocation", "relatedFaction", "importance", "notes"
+                    )
+                    keys.all { key ->
+                        !left.has(key) || !right.has(key) ||
+                            left.optString(key).trim().equals(right.optString(key).trim(), ignoreCase = true)
+                    }
+                }
+
+                "location_upsert" -> sharedFieldsAgree(
+                    left, right,
+                    setOf("name","region","parentLocation","description","discoveryState","status","notes")
+                )
+
+                "faction_upsert" -> sharedFieldsAgree(
+                    left, right,
+                    setOf("name","description","alignment","relationshipToParty","status","goals","notes")
+                )
+
+                "timeline_event_new" -> {
+                    left.optString("title").trim().equals(right.optString("title").trim(), true) &&
+                        left.optString("summary").trim().equals(right.optString("summary").trim(), true)
+                }
+
+                else -> normalizeJson(a.proposedChanges) == normalizeJson(b.proposedChanges)
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun sharedFieldsAgree(left: JSONObject, right: JSONObject, keys: Set<String>): Boolean =
+        keys.all { key ->
+            !left.has(key) || !right.has(key) ||
+                left.optString(key).trim().equals(right.optString(key).trim(), ignoreCase = true)
+        }
+
     private suspend fun isWorldNoOp(p: ChangeProposalEntity): Boolean {
         return runCatching {
             val o = JSONObject(p.proposedChanges)
@@ -977,30 +1119,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }.getOrDefault("${p.targetType}|${p.targetId ?: 0}")
     }
 
-    private fun sameEffectiveChange(a: String, b: String): Boolean =
-        canonicalJson(a) == canonicalJson(b)
-
-    private fun canonicalJson(raw: String): String = runCatching {
-        canonicalValue(JSONObject(raw)).toString()
-    }.getOrDefault(raw.trim())
-
-    private fun canonicalValue(value: Any?): Any? = when (value) {
-        null, JSONObject.NULL -> JSONObject.NULL
-        is JSONObject -> {
-            val out = JSONObject()
-            value.keys().asSequence().toList().sorted().forEach { key ->
-                out.put(key, canonicalValue(value.opt(key)))
-            }
-            out
-        }
-        is org.json.JSONArray -> {
-            org.json.JSONArray().apply {
-                for (i in 0 until value.length()) put(canonicalValue(value.opt(i)))
-            }
-        }
-        is String -> value.trim()
-        else -> value
-    }
+    private fun normalizeJson(raw: String): String =
+        runCatching { JSONObject(raw).toString() }.getOrDefault(raw.trim())
 
     private fun JSONObject.valueOr(key: String, fallback: String): String {
         if (!has(key) || isNull(key)) return fallback

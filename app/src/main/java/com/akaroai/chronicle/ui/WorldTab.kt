@@ -242,8 +242,7 @@ private fun WorldMapCanvas(
 
         locations.forEach { l ->
             val charactersHere = characters.filter { c ->
-                val text = listOf(c.notes, c.relationship, c.affiliations).joinToString(" ")
-                Regex("""(?i)(?:at|in|staying at|staying in|located at|located in|remains at|remains in)\s+${Regex.escape(l.name)}\b""").containsMatchIn(text)
+                latestCharacterLocation(c).equals(l.name, ignoreCase = true)
             }
             val pos = positions[l.name] ?: NodePos(.5f,.5f)
             val current = currentLocation.equals(l.name, true)
@@ -359,8 +358,7 @@ private fun LocationDetailSheet(
     }
     val events = timeline.filter { it.location.equals(location.name, true) }
     val charactersHere = characters.filter { c ->
-        val text = listOf(c.notes, c.relationship, c.affiliations).joinToString(" ")
-        Regex("""(?i)(?:at|in|staying at|staying in|located at|located in|remains at|remains in)\s+${Regex.escape(location.name)}\b""").containsMatchIn(text)
+        latestCharacterLocation(c).equals(location.name, ignoreCase = true)
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -530,4 +528,27 @@ private fun QuestList(quests: List<QuestEntity>) {
             }
         }
     }
+}
+
+
+private fun latestCharacterLocation(character: CharacterEntity): String {
+    val explicit = Regex("""(?i)Currently at\s+([^.\n]+)\.""")
+        .findAll(character.notes)
+        .lastOrNull()
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        .orEmpty()
+    if (explicit.isNotBlank()) return explicit
+
+    // Backward-compatible fallback for older imported/manual character notes.
+    val legacyText = listOf(character.notes, character.relationship, character.affiliations)
+        .joinToString("\n")
+    return Regex("""(?i)(?:staying at|staying in|located at|located in|remains at|remains in)\s+([^.\n]+)""")
+        .findAll(legacyText)
+        .lastOrNull()
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.trim()
+        .orEmpty()
 }
