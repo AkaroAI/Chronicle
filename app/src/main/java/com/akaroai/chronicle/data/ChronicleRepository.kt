@@ -710,6 +710,41 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         return false
     }
 
+    suspend fun proposeExplicitCampaignYear(campaignId: Long, text: String): Boolean {
+        val match = Regex(
+            """(?i)\b(?:world|campaign|story|setting)\b.{0,35}\b(?:year|set in)\s+(?:the\s+year\s+)?([A-Za-z0-9-]{1,20})\b"""
+        ).find(text) ?: return false
+        val year = match.groupValues[1].trim()
+        if (year.isBlank()) return false
+
+        val alreadyStored = dao.memoriesSnapshot(campaignId).any {
+            it.category.equals("Canon", true) &&
+                it.title.equals("Campaign Year", true) &&
+                it.content.contains(year, true)
+        }
+        if (alreadyStored) return false
+
+        addProposal(
+            ChangeProposalEntity(
+                campaignId = campaignId,
+                summary = "Set campaign year to $year",
+                targetType = "memory_new",
+                proposedChanges = JSONObject()
+                    .put("category", "Canon")
+                    .put("title", "Campaign Year")
+                    .put("content", "The campaign is set in the year $year.")
+                    .toString(),
+                reason = "Explicit campaign calendar statement: ${text.trim()}",
+                priority = "Normal",
+                groupType = "Lore",
+                groupLabel = "Campaign Calendar",
+                changeMode = "Replace",
+                evidenceType = "Player Confirmed"
+            )
+        )
+        return true
+    }
+
     suspend fun proposeQuestStateChange(
         campaignId: Long,
         questTitle: String,
@@ -762,13 +797,15 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         val name = changes.optString("name").trim()
         if (name.isBlank()) error("Location needs a name.")
         val old = dao.locationsSnapshot(campaignId).firstOrNull { it.name.equals(name, true) }
+        fun value(key: String, current: String): String =
+            changes.optString(key).trim().takeIf { it.isNotBlank() } ?: current
         val next = (old ?: LocationEntity(campaignId = campaignId, name = name)).copy(
-            region = changes.optString("region", old?.region ?: ""),
-            parentLocation = changes.optString("parentLocation", old?.parentLocation ?: ""),
-            description = changes.optString("description", old?.description ?: ""),
+            region = value("region", old?.region ?: ""),
+            parentLocation = value("parentLocation", old?.parentLocation ?: ""),
+            description = value("description", old?.description ?: ""),
             discoveryState = changes.optString("discoveryState", old?.discoveryState ?: "Discovered"),
             status = changes.optString("status", old?.status ?: "Active"),
-            notes = changes.optString("notes", old?.notes ?: ""),
+            notes = value("notes", old?.notes ?: ""),
             updatedAt = System.currentTimeMillis()
         )
         if (old == null) dao.insertLocation(next) else dao.updateLocation(next)
@@ -808,6 +845,10 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     }
 
     suspend fun addProposal(proposal: ChangeProposalEntity) {
+        // Invalid dependency edges must never reach Review as approvable items.
+        if (proposal.targetType in setOf("character_update", "cast_tier_update") && proposal.targetId == null) {
+            return
+        }
         val worldTypes = setOf("location_upsert", "faction_upsert", "quest_upsert", "timeline_event_new")
         val oldPending = if (proposal.targetType in worldTypes) {
             val identity = proposalIdentity(proposal)
@@ -1088,6 +1129,16 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 val current = dao.campaignById(proposal.campaignId)
                     ?: error("Campaign no longer exists.")
                 val fields = changes.optJSONObject("fields") ?: changes
+                val supported = setOf("name", "description", "setting", "genreTone", "currentLocation", "currentObjective")
+                val supplied = buildSet {
+                    val keys = fields.keys()
+                    while (keys.hasNext()) add(keys.next())
+                }.filterNot { it.startsWith("__") }
+                val unsupported = supplied - supported
+                if (unsupported.isNotEmpty()) {
+                    error("Unsupported campaign field${if (unsupported.size == 1) "" else "s"}: ${unsupported.joinToString()}")
+                }
+                if (supplied.isEmpty()) error("Campaign proposal contains no supported changes.")
                 updateCampaign(
                     current.copy(
                         name = fields.valueOr("name", current.name),
