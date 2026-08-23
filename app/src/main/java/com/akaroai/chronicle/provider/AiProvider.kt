@@ -64,11 +64,7 @@ class OpenAiCompatibleProvider(
 
         val validatedBase = validateProviderTransport(settings)
         val nativePayload = request.nativeEnginePayload
-        val endpoint = if (nativePayload != null) {
-            validatedBase.removeSuffix("/v1") + "/api/v1/generate"
-        } else {
-            validatedBase + "/chat/completions"
-        }
+        val endpoint = providerEndpoint(validatedBase, nativePayload != null)
 
         val messages = JSONArray()
         val system = buildString {
@@ -125,6 +121,15 @@ class OpenAiCompatibleProvider(
                 .optString("content")
                 .ifBlank { "The provider returned an empty message." }
         }
+    }
+}
+
+internal fun providerEndpoint(validatedBase: String, nativeEngineRequest: Boolean): String {
+    val root = validatedBase.trimEnd('/').removeSuffix("/v1")
+    return if (nativeEngineRequest) {
+        "$root/api/v1/generate"
+    } else {
+        "$root/v1/chat/completions"
     }
 }
 
