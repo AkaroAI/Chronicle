@@ -20,7 +20,8 @@ data class ProviderRequest(
     val systemPrompt: String,
     val memoryContext: String,
     val messages: List<ProviderMessage>,
-    val temperature: Double = 0.7
+    val temperature: Double = 0.7,
+    val nativeEnginePayload: JSONObject? = null
 )
 
 interface AiProvider {
@@ -61,7 +62,13 @@ class OpenAiCompatibleProvider(
         require(settings.baseUrl.isNotBlank()) { "Provider base URL is missing." }
         require(settings.model.isNotBlank()) { "Model name is missing." }
 
-        val endpoint = validateProviderTransport(settings) + "/chat/completions"
+        val validatedBase = validateProviderTransport(settings)
+        val nativePayload = request.nativeEnginePayload
+        val endpoint = if (nativePayload != null) {
+            validatedBase.removeSuffix("/v1") + "/api/v1/generate"
+        } else {
+            validatedBase + "/chat/completions"
+        }
 
         val messages = JSONArray()
         val system = buildString {
@@ -77,7 +84,7 @@ class OpenAiCompatibleProvider(
             messages.put(JSONObject().put("role", it.role).put("content", it.content))
         }
 
-        val payload = JSONObject()
+        val payload = nativePayload ?: JSONObject()
             .put("model", settings.model)
             .put("messages", messages)
             .put("temperature", request.temperature.coerceIn(0.0, 1.5))
@@ -101,6 +108,11 @@ class OpenAiCompatibleProvider(
             }
 
             val json = JSONObject(body)
+            if (nativePayload != null) {
+                return@withContext json.optString("response")
+                    .ifBlank { throw IllegalStateException("Chronicle Engine returned no narrative.") }
+            }
+
             val choices = json.optJSONArray("choices")
                 ?: throw IllegalStateException("Provider returned no choices.")
 

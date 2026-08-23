@@ -4,6 +4,7 @@ import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.ProposalParser
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -272,6 +273,140 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 }
             }
         }
+    }
+
+    suspend fun buildStructuredEnginePayload(campaign: CampaignEntity): JSONObject {
+        val characters = dao.charactersSnapshot(campaign.id)
+        val memories = dao.memoriesSnapshot(campaign.id)
+        val locations = dao.locationsSnapshot(campaign.id)
+        val factions = dao.factionsSnapshot(campaign.id)
+        val quests = dao.questsSnapshot(campaign.id)
+        val timeline = dao.timelineSnapshot(campaign.id)
+        val recent = dao.messagesSnapshot(campaign.id).takeLast(5)
+
+        fun fact(kind: String, text: String, id: Long) = JSONObject()
+            .put("id", id.toString())
+            .put("kind", kind)
+            .put("text", text)
+            .put("confidence", 1.0)
+
+        val canon = JSONArray()
+        locations.forEach { location ->
+            canon.put(
+                fact(
+                    "location",
+                    "${location.name} | region=${location.region} | parent=${location.parentLocation} | " +
+                        "discovery=${location.discoveryState} | status=${location.status} | " +
+                        "${location.description} | notes=${location.notes}",
+                    location.id
+                )
+            )
+        }
+        factions.forEach { faction ->
+            canon.put(
+                fact(
+                    "faction",
+                    "${faction.name} | alignment=${faction.alignment} | relationship=${faction.relationshipToParty} | " +
+                        "status=${faction.status} | goals=${faction.goals} | ${faction.description}",
+                    faction.id
+                )
+            )
+        }
+        quests.forEach { quest ->
+            canon.put(
+                fact(
+                    "quest",
+                    "${quest.title} | status=${quest.status} | objective=${quest.objective} | " +
+                        "location=${quest.relatedLocation} | faction=${quest.relatedFaction} | ${quest.summary}",
+                    quest.id
+                )
+            )
+        }
+        timeline.takeLast(20).forEach { event ->
+            canon.put(
+                fact(
+                    "timeline",
+                    "${event.title} | type=${event.eventType} | location=${event.location} | " +
+                        "characters=${event.involvedCharacters} | ${event.summary}",
+                    event.id
+                )
+            )
+        }
+
+        val characterArray = JSONArray()
+        characters.forEach { character ->
+            val isPlayer = campaign.playerCharacterId == character.id
+            characterArray.put(
+                JSONObject()
+                    .put("id", character.id.toString())
+                    .put("name", character.name)
+                    .put(
+                        "description",
+                        buildString {
+                            if (isPlayer) append("PLAYER-CONTROLLED CHARACTER. ")
+                            append("species=${character.species}; age=${character.age}; pronouns=${character.pronouns}; ")
+                            append("appearance=${character.appearance}; personality=${character.personality}; ")
+                            append("backstory=${character.backstory}; abilities=${character.abilities}; ")
+                            append("equipment=${character.equipment}; affiliations=${character.affiliations}; ")
+                            append("fears=${character.fears}; injuries=${character.injuries}; ")
+                            append("location=${character.currentLocation}; status=${character.status}; notes=${character.notes}")
+                        }
+                    )
+                    .put("goals", JSONArray().apply { if (character.goals.isNotBlank()) put(character.goals) })
+                    .put(
+                        "known_facts",
+                        JSONArray().apply {
+                            if (character.relationship.isNotBlank()) put("relationships: ${character.relationship}")
+                        }
+                    )
+                    .put("secrets", JSONArray().apply { if (character.secrets.isNotBlank()) put(character.secrets) })
+                    .put(
+                        "relationships",
+                        JSONObject().apply {
+                            if (character.relationship.isNotBlank()) put("summary", character.relationship)
+                        }
+                    )
+            )
+        }
+
+        val memoryArray = JSONArray()
+        memories.takeLast(30).forEach { memory ->
+            memoryArray.put(
+                JSONObject()
+                    .put("id", memory.id.toString())
+                    .put("kind", memory.category)
+                    .put("text", "${memory.title}: ${memory.content}")
+                    .put("confidence", 1.0)
+            )
+        }
+
+        val messages = JSONArray()
+        recent.forEach { message ->
+            messages.put(JSONObject().put("role", message.role).put("content", message.content))
+        }
+
+        return JSONObject()
+            .put("messages", messages)
+            .put("temperature", 0.75)
+            .put(
+                "campaign",
+                JSONObject()
+                    .put("campaign_id", campaign.id.toString())
+                    .put("campaign_name", campaign.name)
+                    .put("current_scene", campaign.currentObjective)
+                    .put("active_location", campaign.currentLocation)
+                    .put("canon", canon)
+                    .put("memories", memoryArray)
+                    .put("characters", characterArray)
+                    .put(
+                        "unresolved_threads",
+                        JSONArray().apply {
+                            quests.filter { it.status in setOf("Active", "Paused") }.forEach {
+                                put("${it.title}: ${it.objective}")
+                            }
+                        }
+                    )
+            )
     }
 
     suspend fun proposeExplicitCharacterMovementCommand(campaignId: Long, text: String): Int {

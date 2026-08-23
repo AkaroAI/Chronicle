@@ -548,28 +548,27 @@ class ChronicleViewModel(
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
 
-                // Phase 1b: AI canon analysis happens BEFORE storyteller generation.
+                _turnPhase.value = "GENERATING_STORY"
+                val assistantReply = generateStoryReply(campaign, text, provider)
+
+                // Analyze the completed exchange. Chronicle remains the sole authority:
+                // suggestions stay inert in Review until the player approves them.
                 if (_providerSettings.value.enabled) {
+                    _turnPhase.value = "ANALYZING_CANON"
+                    val latestCampaign = repository.campaignById(campaign.id) ?: campaign
                     scanForProposals(
-                        campaign = campaign,
-                        context = repository.buildAutomationContextSnapshot(campaign),
+                        campaign = latestCampaign,
+                        context = repository.buildAutomationContextSnapshot(latestCampaign),
                         userText = text,
-                        assistantReply = "",
+                        assistantReply = assistantReply,
                         provider = provider
                     )
                 }
 
                 val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
                 if (newPending.isNotEmpty()) {
-                    _pendingTurnProposalIds = newPending
-                    _pendingCanonTurn.value = text
-                    _turnPhase.value = "AWAITING_REVIEW"
-                    _notice.value = "${newPending.size} canon change${if (newPending.size == 1) "" else "s"} need Review before the story continues."
-                    return@launch
+                    _notice.value = "${newPending.size} canon suggestion${if (newPending.size == 1) "" else "s"} ready in Review."
                 }
-
-                _turnPhase.value = "GENERATING_STORY"
-                generateStoryReply(campaign, text, provider)
                 _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
@@ -586,10 +585,9 @@ class ChronicleViewModel(
         campaign: CampaignEntity,
         userText: String,
         provider: AiProvider
-    ) {
+    ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
-        val context = repository.buildCanonicalContextSnapshot(freshCampaign)
-        val history = repository.recentMessages(campaign.id, 40)
+        val history = repository.recentMessages(campaign.id, 5)
             .map { ProviderMessage(it.role, it.content) }
 
         val system = """
@@ -623,9 +621,10 @@ class ChronicleViewModel(
 
         val request = ProviderRequest(
             systemPrompt = system,
-            memoryContext = context,
+            memoryContext = "",
             messages = history,
-            temperature = 0.75
+            temperature = 0.75,
+            nativeEnginePayload = repository.buildStructuredEnginePayload(freshCampaign)
         )
 
         var reply = provider.generate(request)
@@ -650,6 +649,7 @@ class ChronicleViewModel(
         }
 
         repository.addMessage(campaign.id, "assistant", reply)
+        return reply
     }
 
     private fun maybeResumePendingCanonTurn() {
@@ -735,6 +735,10 @@ class ChronicleViewModel(
                 - If a character already exists, use character_update with that exact targetId.
                 - If the user asks to create/register a NEW character sheet and no matching canonical character exists,
                   use character_new. The storyteller's chat response is NOT the character sheet.
+                - If a named character meaningfully acts or speaks in the completed exchange and no matching
+                  canonical character exists, propose character_new with only established fields. Do not wait for
+                  an explicit "create a sheet" command. Use Player Confirmed when the player introduced the name;
+                  otherwise classify the evidence honestly as Story Event or Assistant Only.
                 - Do not treat a character sheet printed by the assistant in chat as authoritative evidence by itself.
                 - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
                 - CANON-FIRST MODE: the storyteller reply may be absent. Detect all durable changes explicitly established by the player message before narration.
