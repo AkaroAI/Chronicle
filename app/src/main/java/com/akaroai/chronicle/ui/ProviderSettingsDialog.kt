@@ -71,6 +71,11 @@ fun ProviderSettingsDialog(
                     singleLine = true
                 )
 
+                Text(
+                    "Local HTTP supports private IP addresses only. Leave the API key blank for Chronicle Engine.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it },

@@ -6,6 +6,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -60,7 +61,7 @@ class OpenAiCompatibleProvider(
         require(settings.baseUrl.isNotBlank()) { "Provider base URL is missing." }
         require(settings.model.isNotBlank()) { "Model name is missing." }
 
-        val endpoint = settings.baseUrl.trimEnd('/') + "/chat/completions"
+        val endpoint = validateProviderTransport(settings) + "/chat/completions"
 
         val messages = JSONArray()
         val system = buildString {
@@ -113,4 +114,32 @@ class OpenAiCompatibleProvider(
                 .ifBlank { "The provider returned an empty message." }
         }
     }
+}
+
+internal fun validateProviderTransport(settings: ProviderSettings): String {
+    val baseUrl = settings.baseUrl.trim().trimEnd('/')
+    val parsed = baseUrl.toHttpUrlOrNull()
+        ?: throw IllegalArgumentException("Provider base URL must start with http:// or https://.")
+
+    if (parsed.isHttps) return baseUrl
+
+    require(parsed.scheme == "http" && isPrivateLanHost(parsed.host)) {
+        "HTTP is allowed only for a private local-network IP address. Use HTTPS for public providers."
+    }
+    require(settings.apiKey.isBlank()) {
+        "API keys cannot be sent over local HTTP. Leave the API key blank or use HTTPS."
+    }
+    return baseUrl
+}
+
+internal fun isPrivateLanHost(host: String): Boolean {
+    if (host.equals("localhost", ignoreCase = true)) return true
+
+    val octets = host.split('.').map { it.toIntOrNull() ?: return false }
+    if (octets.size != 4 || octets.any { it !in 0..255 }) return false
+
+    return octets[0] == 10 ||
+        (octets[0] == 172 && octets[1] in 16..31) ||
+        (octets[0] == 192 && octets[1] == 168) ||
+        octets[0] == 127
 }
