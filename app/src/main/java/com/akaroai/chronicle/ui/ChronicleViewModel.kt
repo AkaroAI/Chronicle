@@ -543,33 +543,56 @@ class ChronicleViewModel(
                 // Phase 1: deterministic canon detection.
                 repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
                 repository.proposeExplicitQuestCommand(campaign.id, text)
+                repository.proposeExplicitCampaignYear(campaign.id, text)
 
                 val provider: AiProvider =
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
 
-                // Phase 1b: AI canon analysis happens BEFORE storyteller generation.
+                // Canon-changing player statements are reviewed before the storyteller can use
+                // them. This activates the existing pending-turn resume path instead of allowing
+                // narration to race ahead of Review.
                 if (_providerSettings.value.enabled) {
+                    val latestCampaign = repository.campaignById(campaign.id) ?: campaign
                     scanForProposals(
-                        campaign = campaign,
-                        context = repository.buildAutomationContextSnapshot(campaign),
+                        campaign = latestCampaign,
+                        context = repository.buildAutomationContextSnapshot(latestCampaign),
                         userText = text,
                         assistantReply = "",
                         provider = provider
                     )
                 }
 
-                val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
-                if (newPending.isNotEmpty()) {
-                    _pendingTurnProposalIds = newPending
+                val preStoryPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
+                if (preStoryPending.isNotEmpty()) {
                     _pendingCanonTurn.value = text
+                    _pendingTurnProposalIds = preStoryPending
                     _turnPhase.value = "AWAITING_REVIEW"
-                    _notice.value = "${newPending.size} canon change${if (newPending.size == 1) "" else "s"} need Review before the story continues."
+                    _notice.value = "Review ${preStoryPending.size} canon suggestion${if (preStoryPending.size == 1) "" else "s"} before the story continues."
                     return@launch
                 }
 
                 _turnPhase.value = "GENERATING_STORY"
-                generateStoryReply(campaign, text, provider)
+                val assistantReply = generateStoryReply(campaign, text, provider)
+
+                // Analyze the completed exchange. Chronicle remains the sole authority:
+                // suggestions stay inert in Review until the player approves them.
+                if (_providerSettings.value.enabled) {
+                    _turnPhase.value = "ANALYZING_CANON"
+                    val latestCampaign = repository.campaignById(campaign.id) ?: campaign
+                    scanForProposals(
+                        campaign = latestCampaign,
+                        context = repository.buildAutomationContextSnapshot(latestCampaign),
+                        userText = text,
+                        assistantReply = assistantReply,
+                        provider = provider
+                    )
+                }
+
+                val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
+                if (newPending.isNotEmpty()) {
+                    _notice.value = "${newPending.size} canon suggestion${if (newPending.size == 1) "" else "s"} ready in Review."
+                }
                 _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
@@ -586,10 +609,9 @@ class ChronicleViewModel(
         campaign: CampaignEntity,
         userText: String,
         provider: AiProvider
-    ) {
+    ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
-        val context = repository.buildCanonicalContextSnapshot(freshCampaign)
-        val history = repository.recentMessages(campaign.id, 40)
+        val history = repository.recentMessages(campaign.id, 5)
             .map { ProviderMessage(it.role, it.content) }
 
         val system = """
@@ -619,13 +641,19 @@ class ChronicleViewModel(
             Preserve established canon, causal continuity, character autonomy, tone, and consequences.
             Never import facts from another campaign.
             Continue naturally from the player's latest message using the now-resolved canonical state.
+            Incorporate the player's supplied action and emotional meaning before introducing new developments.
+            Never move, speak for, decide for, or complete an additional action for the player-controlled character.
+            A small player action does not authorize travel, a new encounter, a clue discovery, a time jump, or quest progress.
+            NPCs may react naturally, but stop at the next meaningful player decision point.
+            Atmospheric details are temporary narration unless they already exist in approved canon; do not present invented history as fact.
         """.trimIndent()
 
         val request = ProviderRequest(
             systemPrompt = system,
-            memoryContext = context,
+            memoryContext = "",
             messages = history,
-            temperature = 0.75
+            temperature = 0.75,
+            nativeEnginePayload = repository.buildStructuredEnginePayload(freshCampaign)
         )
 
         var reply = provider.generate(request)
@@ -650,6 +678,7 @@ class ChronicleViewModel(
         }
 
         repository.addMessage(campaign.id, "assistant", reply)
+        return reply
     }
 
     private fun maybeResumePendingCanonTurn() {
@@ -701,6 +730,7 @@ class ChronicleViewModel(
             // This makes Scan a genuine recovery tool instead of an AI-only retry.
             repository.proposeExplicitCharacterMovementCommand(campaign.id, lastUser.content)
             repository.proposeExplicitQuestCommand(campaign.id, lastUser.content)
+            repository.proposeExplicitCampaignYear(campaign.id, lastUser.content)
 
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
@@ -735,9 +765,18 @@ class ChronicleViewModel(
                 - If a character already exists, use character_update with that exact targetId.
                 - If the user asks to create/register a NEW character sheet and no matching canonical character exists,
                   use character_new. The storyteller's chat response is NOT the character sheet.
+                - If a named character meaningfully acts or speaks in the completed exchange and no matching
+                  canonical character exists, propose character_new with only established fields. Do not wait for
+                  an explicit "create a sheet" command. Use Player Confirmed when the player introduced the name;
+                  otherwise classify the evidence honestly as Story Event or Assistant Only.
                 - Do not treat a character sheet printed by the assistant in chat as authoritative evidence by itself.
                 - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
                 - CANON-FIRST MODE: the storyteller reply may be absent. Detect all durable changes explicitly established by the player message before narration.
+                - NEVER label storyteller-invented descriptions, history, motives, relationship labels, rewards, or clues as Player Confirmed.
+                - Leave unknown optional fields empty. Do not fill blanks creatively.
+                - Never emit character_update with targetId=null. For a player-named character missing from context, emit character_new instead.
+                - A simple interaction such as holding hands records only that interaction; it does not prove romance, alliance, loyalty, or relationship rank.
+                - A world/campaign year is durable canon: use memory_new with category Canon, title Campaign Year, and the exact player-stated year.
 
                 EVIDENCE TYPE
                 Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact. If the user supplies the fact and the assistant only reformats or repeats it, it is Player Confirmed, NOT Assistant Only.
@@ -839,6 +878,7 @@ class ChronicleViewModel(
 
                 campaign_update
                 changes={"fields":{"currentLocation":"...","currentObjective":"..."}}
+                Only these fields are supported here. Never emit year or other invented campaign fields.
 
                 cast_tier_update
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
@@ -911,7 +951,13 @@ class ChronicleViewModel(
                 )
             )
 
-            ProposalParser.parse(raw).forEach { parsed ->
+            val sanitized = ProposalSanitizer.sanitize(
+                proposals = ProposalParser.parse(raw),
+                userText = userText,
+                existingCharacterNames = repository.charactersSnapshot(campaign.id).map { it.name }.toSet()
+            )
+
+            sanitized.forEach { parsed ->
                 val targetCharacter = parsed.targetId?.let { id ->
                     characters.value.firstOrNull { it.id == id }
                 }
