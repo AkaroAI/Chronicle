@@ -13,8 +13,8 @@ android {
         applicationId = "com.akaroai.chronicle"
         minSdk = 26
         targetSdk = 35
-        versionCode = 27
-        versionName = "0.10.1.8"
+        versionCode = 28
+        versionName = "0.11.0"
     }
 
     buildFeatures {
