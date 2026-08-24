@@ -627,14 +627,8 @@ class ChronicleViewModel(
     }
 
     private suspend fun proposeExplicitPairedInteraction(campaignId: Long, rawText: String) {
-        val text = rawText.substringAfter('\n', rawText).trim()
-        val match = Regex(
-            """^([\p{L}][\p{L}'-]*)\s+and\s+([\p{L}][\p{L}'-]*)\s+(hold hands|are holding hands|hug|kiss)\b""",
-            RegexOption.IGNORE_CASE
-        ).find(text) ?: return
-        val first = match.groupValues[1].replaceFirstChar { it.titlecase() }
-        val second = match.groupValues[2].replaceFirstChar { it.titlecase() }
-        val action = match.groupValues[3].lowercase()
+        val interaction = ChatRouting.parsePairedInteraction(rawText) ?: return
+        val (first, second, action) = interaction
         val existing = repository.charactersSnapshot(campaignId)
 
         for (name in listOf(first, second)) {

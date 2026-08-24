@@ -501,7 +501,7 @@ private fun RouteSelector(value: String, options: List<String>, onSelect: (Strin
 private fun MessageBubble(m: MessageEntity) {
     val u = m.role == "user"
     val route = m.content.lineSequence().firstOrNull()?.takeIf { it.startsWith("[") && it.endsWith("]") }
-    val displayContent = if (route != null) m.content.substringAfter('\n', "") else m.content
+    val displayContent = ChatRouting.visibleContent(m.content)
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
