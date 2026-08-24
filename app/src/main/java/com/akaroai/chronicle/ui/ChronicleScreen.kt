@@ -514,62 +514,46 @@ private fun CharactersTab(vm: ChronicleViewModel) {
     val chars by vm.characters.collectAsState()
     val campaign by vm.selectedCampaign.collectAsState()
     var editing by remember { mutableStateOf<CharacterEntity?>(null) }
+    var opened by remember { mutableStateOf<CharacterEntity?>(null) }
     var adding by remember { mutableStateOf(false) }
 
-    Column(
-        Modifier.fillMaxWidth().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text("Characters", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Cast tier controls how aggressively Chronicle tracks each character.",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Button(onClick = { adding = true }) {
-            Icon(Icons.Default.Add, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
-            Text("Add Character")
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("Characters", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Open a name to view its canonical book", color = ChronicleColors.MutedInk)
+            }
+            FilledTonalIconButton(onClick = { adding = true }) { Icon(Icons.Default.Add, "Add character") }
         }
-    }
-
-    LazyColumn(
-        contentPadding = PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items(chars, key = { it.id }) { c ->
-            ElevatedCard(
-                Modifier.fillMaxWidth().clickable { editing = c }
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+        Spacer(Modifier.height(16.dp))
+        if (chars.isEmpty()) {
+            ChronicleEmptyState("No characters established yet.", "Approved character proposals will appear here.")
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(chars, key = { it.id }) { c ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable { opened = c },
+                        shape = RoundedCornerShape(20.dp),
+                        color = ChronicleColors.Surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .3f)),
+                        shadowElevation = 8.dp
                     ) {
-                        Text(
-                            c.name,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        AssistChip(onClick = {}, label = { Text(c.castTier) })
-                    }
-
-                    if (c.species.isNotBlank() || c.age.isNotBlank()) {
-                        Text(
-                            listOf(c.species, c.age)
-                                .filter { it.isNotBlank() }
-                                .joinToString(" • ")
-                        )
-                    }
-                    if (c.relationship.isNotBlank()) {
-                        Text("Relationship: ${c.relationship}")
-                    }
-                    if (c.personality.isNotBlank()) {
-                        Text(c.personality, maxLines = 2)
+                        Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(c.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.ChevronRight, "Open ${c.name}", tint = ChronicleColors.Cyan)
+                        }
                     }
                 }
             }
         }
+    }
+
+    opened?.let { character ->
+        CharacterBookDialog(
+            character = character,
+            onDismiss = { opened = null },
+            onEdit = { opened = null; editing = character }
+        )
     }
 
     if (adding) {
@@ -601,6 +585,70 @@ private fun CharactersTab(vm: ChronicleViewModel) {
                 editing = null
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CharacterBookDialog(character: CharacterEntity, onDismiss: () -> Unit, onEdit: () -> Unit) {
+    val tabs = listOf("Overview", "Lore & Backstory", "Skills", "Relationships", "Status Effects", "Equipment", "Notes")
+    var selectedTab by remember(character.id) { mutableIntStateOf(0) }
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            Modifier.fillMaxWidth(.98f).fillMaxHeight(.94f),
+            shape = RoundedCornerShape(28.dp),
+            color = ChronicleColors.DeepNavy,
+            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .55f)),
+            shadowElevation = 24.dp
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.ArrowBack, "Characters") }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(character.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text("Approved Canon", color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelMedium)
+                    }
+                    IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit character") }
+                }
+                ScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 8.dp, containerColor = ChronicleColors.Surface) {
+                    tabs.forEachIndexed { index, title ->
+                        Tab(selected = selectedTab == index, onClick = { selectedTab = index }, text = { Text(title) })
+                    }
+                }
+                Surface(
+                    Modifier.fillMaxSize().padding(14.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = ChronicleColors.Surface.copy(alpha = .78f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .25f))
+                ) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        when (selectedTab) {
+                            0 -> {
+                                BookField("Identity", listOf(character.species, character.age, character.pronouns).filter { it.isNotBlank() }.joinToString(" • "))
+                                BookField("Appearance", character.appearance)
+                                BookField("Personality", character.personality)
+                                BookField("Goals", character.goals)
+                            }
+                            1 -> { BookField("Lore", ""); BookField("Backstory", character.backstory); BookField("Secrets", character.secrets) }
+                            2 -> BookField("Skills & Abilities", character.abilities)
+                            3 -> { BookField("Relationships", character.relationship); BookField("Affiliations", character.affiliations) }
+                            4 -> { BookField("Status", character.status); BookField("Injuries & Conditions", character.injuries); BookField("Fears & Vulnerabilities", character.fears) }
+                            5 -> BookField("Equipment", character.equipment)
+                            else -> BookField("Notes", character.notes)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookField(title: String, value: String) {
+    Column {
+        Text(title, color = ChronicleColors.Lavender, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(5.dp))
+        Text(value.ifBlank { "Not established yet." }, color = if (value.isBlank()) ChronicleColors.MutedInk else MaterialTheme.colorScheme.onSurface)
     }
 }
 
