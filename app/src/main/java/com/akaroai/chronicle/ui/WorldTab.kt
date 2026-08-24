@@ -2,6 +2,7 @@ package com.akaroai.chronicle.ui
 
 import android.content.Context
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -428,7 +429,7 @@ private fun SectionTitle(text: String) {
 
 @Composable
 private fun MiniWorldCard(title: String, subtitle: String, body: String) {
-    ElevatedCard(Modifier.fillMaxWidth()) {
+    WorldGlassCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp)) {
             Text(title, fontWeight = FontWeight.Bold)
             if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.labelSmall)
@@ -449,7 +450,7 @@ private fun LocationList(locations: List<LocationEntity>, onSelect: (LocationEnt
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(locations, key={it.id}) { l ->
-            ElevatedCard(Modifier.fillMaxWidth().clickable { onSelect(l) }) {
+            WorldGlassCard(Modifier.fillMaxWidth().clickable { onSelect(l) }) {
                 Column(Modifier.padding(14.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(l.name, fontWeight = FontWeight.Bold)
@@ -476,7 +477,7 @@ private fun FactionList(factions: List<FactionEntity>) {
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         items(factions, key={it.id}) { f ->
-            ElevatedCard(Modifier.fillMaxWidth()) {
+            WorldGlassCard(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(14.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text(f.name, fontWeight = FontWeight.Bold)
@@ -513,7 +514,7 @@ private fun QuestList(quests: List<QuestEntity>) {
         ) {
             if (visible.isEmpty()) item { Text("No $filter quests.") }
             items(visible, key={it.id}) { q ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
+                WorldGlassCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(14.dp)) {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Text(q.title, fontWeight = FontWeight.Bold, modifier=Modifier.weight(1f))
@@ -528,6 +529,18 @@ private fun QuestList(quests: List<QuestEntity>) {
             }
         }
     }
+}
+
+@Composable
+private fun WorldGlassCard(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = ChronicleColors.Surface.copy(alpha = .88f),
+        border = BorderStroke(1.dp, ChronicleColors.Cyan.copy(alpha = .22f)),
+        shadowElevation = 10.dp,
+        content = content
+    )
 }
 
 

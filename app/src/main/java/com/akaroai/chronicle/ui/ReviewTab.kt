@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -163,7 +165,17 @@ private fun ProposalCard(
     onReject: () -> Unit,
     onEdit: () -> Unit
 ) {
-    OutlinedCard(Modifier.fillMaxWidth()) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        color = ChronicleColors.Surface.copy(alpha = .88f),
+        border = BorderStroke(
+            1.dp,
+            if (proposal.integrityWarning.isBlank()) ChronicleColors.Lavender.copy(alpha = .34f)
+            else ChronicleColors.Amber.copy(alpha = .72f)
+        ),
+        shadowElevation = 12.dp
+    ) {
         Column(Modifier.padding(12.dp)) {
             Row(
                 Modifier.fillMaxWidth(),

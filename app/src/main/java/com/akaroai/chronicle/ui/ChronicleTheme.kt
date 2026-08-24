@@ -4,6 +4,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 
 object ChronicleColors {
     val Void = Color(0xFF060A19)
@@ -39,5 +41,14 @@ private val ChronicleDarkColors = darkColorScheme(
 
 @Composable
 fun ChronicleTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = ChronicleDarkColors, content = content)
+    val base = MaterialTheme.typography
+    val typography = base.copy(
+        displayLarge = base.displayLarge.copy(fontFamily = FontFamily.Serif),
+        displayMedium = base.displayMedium.copy(fontFamily = FontFamily.Serif),
+        headlineLarge = base.headlineLarge.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
+        headlineMedium = base.headlineMedium.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold),
+        headlineSmall = base.headlineSmall.copy(fontFamily = FontFamily.Serif),
+        titleLarge = base.titleLarge.copy(fontFamily = FontFamily.Serif, fontWeight = FontWeight.SemiBold)
+    )
+    MaterialTheme(colorScheme = ChronicleDarkColors, typography = typography, content = content)
 }

@@ -460,7 +460,12 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 item { RouteSelector(actor, listOf("Player") + characters.map { it.name }, { actor = it }, Icons.Default.Person) }
                 item { RouteSelector(intent, listOf("Talking to", "Action", "Observing", "Thinking"), { intent = it }, Icons.Default.Bolt) }
-                item { RouteSelector(target, listOf("Scene", "DM") + characters.map { it.name }, { target = it }, Icons.Default.NearMe) }
+                item {
+                    RouteSelector(target, listOf("Scene", "DM") + characters.map { it.name }, {
+                        target = it
+                        if (it == "DM") { mode = "DM"; intent = "Talking to" }
+                    }, Icons.Default.NearMe)
+                }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(
@@ -489,6 +494,7 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
                         onClick = {
                             mode = item
                             if (item == "DM") { actor = "Player"; target = "DM"; intent = "Talking to" }
+                            else if (target == "DM") target = "Scene"
                         },
                         label = { Text(item) }
                     )

@@ -66,32 +66,7 @@ class OpenAiCompatibleProvider(
         val nativePayload = request.nativeEnginePayload
         val endpoint = providerEndpoint(validatedBase, nativePayload != null)
 
-        val messages = JSONArray()
-        val system = buildString {
-            append(request.systemPrompt.trim())
-            if (request.memoryContext.isNotBlank()) {
-                append("\n\nCAMPAIGN MEMORY — ONLY THIS CAMPAIGN:\n")
-                append(request.memoryContext.trim())
-            }
-        }
-
-        messages.put(JSONObject().put("role", "system").put("content", system))
-        request.messages.forEach {
-            messages.put(JSONObject().put("role", it.role).put("content", it.content))
-        }
-
-        val payload = if (nativePayload != null) {
-            JSONObject(nativePayload.toString())
-                .put("messages", messages)
-                .put("system_prompt", system)
-                .put("temperature", request.temperature.coerceIn(0.0, 1.5))
-        } else {
-            JSONObject()
-                .put("model", settings.model)
-                .put("messages", messages)
-                .put("temperature", request.temperature.coerceIn(0.0, 1.5))
-                .put("stream", false)
-        }
+        val payload = buildProviderPayload(request, settings.model)
 
         val httpRequest = Request.Builder()
             .url(endpoint)
@@ -129,6 +104,31 @@ class OpenAiCompatibleProvider(
                 .ifBlank { "The provider returned an empty message." }
         }
     }
+}
+
+internal fun buildProviderPayload(request: ProviderRequest, model: String): JSONObject {
+    val messages = JSONArray()
+    val system = buildString {
+        append(request.systemPrompt.trim())
+        if (request.memoryContext.isNotBlank()) {
+            append("\n\nCAMPAIGN MEMORY — ONLY THIS CAMPAIGN:\n")
+            append(request.memoryContext.trim())
+        }
+    }
+    messages.put(JSONObject().put("role", "system").put("content", system))
+    request.messages.forEach {
+        messages.put(JSONObject().put("role", it.role).put("content", it.content))
+    }
+    return request.nativeEnginePayload?.let {
+        JSONObject(it.toString())
+            .put("messages", messages)
+            .put("system_prompt", system)
+            .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+    } ?: JSONObject()
+        .put("model", model)
+        .put("messages", messages)
+        .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+        .put("stream", false)
 }
 
 internal fun providerEndpoint(validatedBase: String, nativeEngineRequest: Boolean): String {

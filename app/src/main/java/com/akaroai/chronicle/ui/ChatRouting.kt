@@ -24,4 +24,8 @@ object ChatRouting {
             match.groupValues[3].lowercase()
         )
     }
+
+    fun explicitSoloDepartureSubject(clause: String): String? = Regex(
+        """(?i)^(.+?)\s+leaves?\s+.+?\s+to\s+(?:go|travel|head|move)\b"""
+    ).find(clause)?.groupValues?.get(1)?.trim()
 }

@@ -23,4 +23,15 @@ class ChatRoutingTest {
     @Test fun unrelatedSentenceDoesNotCreatePairedInteraction() {
         assertNull(ChatRouting.parsePairedInteraction("Yuki asks where Asira went."))
     }
+
+    @Test fun soloDepartureDoesNotIncludeCharacterWhoStayedBehind() {
+        assertEquals(
+            "yuki",
+            ChatRouting.explicitSoloDepartureSubject("yuki leaves asira to go to moonfall lake by herself")
+        )
+    }
+
+    @Test fun ordinaryGroupMovementHasNoSoloOverride() {
+        assertNull(ChatRouting.explicitSoloDepartureSubject("yuki and asira go to moonfall lake"))
+    }
 }

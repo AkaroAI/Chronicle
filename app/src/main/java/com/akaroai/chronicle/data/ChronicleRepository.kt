@@ -2,6 +2,7 @@ package com.akaroai.chronicle.data
 
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.ProposalParser
+import com.akaroai.chronicle.ui.ChatRouting
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONObject
 import org.json.JSONArray
@@ -497,10 +498,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             }
 
             val verbMatch = movementWords.find(clause)
-            val explicitDeparture = Regex(
-                """(?i)^(.+?)\s+leaves?\s+.+?\s+to\s+(?:go|travel|head|move)\b"""
-            ).find(clause)
-            val subjectWindow = explicitDeparture?.groupValues?.get(1)
+            val subjectWindow = ChatRouting.explicitSoloDepartureSubject(clause)
                 ?: if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
 
             val subjects = characters
