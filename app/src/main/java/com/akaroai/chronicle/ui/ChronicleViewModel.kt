@@ -625,7 +625,9 @@ class ChronicleViewModel(
     }
 
     private suspend fun generateDmReply(campaign: CampaignEntity, provider: AiProvider) {
-        val history = repository.recentMessages(campaign.id, 8).map {
+        val history = repository.recentMessages(campaign.id, 30)
+            .filter { it.content.startsWith("[DM Conversation]") }
+            .takeLast(8).map {
             ProviderMessage(it.role, it.content)
         }
         val reply = provider.generate(
@@ -652,7 +654,9 @@ class ChronicleViewModel(
         provider: AiProvider
     ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
-        val history = repository.recentMessages(campaign.id, 5)
+        val history = repository.recentMessages(campaign.id, 30)
+            .filterNot { it.content.startsWith("[DM Conversation]") }
+            .takeLast(5)
             .map { ProviderMessage(it.role, it.content) }
 
         val system = """
@@ -762,6 +766,10 @@ class ChronicleViewModel(
         }
 
         val lastUser = messages.value.lastOrNull { it.role == "user" } ?: return
+        if (lastUser.content.startsWith("[DM Conversation]")) {
+            _notice.value = "DM conversation is intentionally non-canonical, so there is nothing to scan."
+            return
+        }
         val lastAssistant = messages.value.lastOrNull {
             it.role == "assistant" && it.createdAt >= lastUser.createdAt
         } ?: return

@@ -282,7 +282,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         val factions = dao.factionsSnapshot(campaign.id)
         val quests = dao.questsSnapshot(campaign.id)
         val timeline = dao.timelineSnapshot(campaign.id)
-        val recent = dao.messagesSnapshot(campaign.id).takeLast(5)
+        val recent = dao.messagesSnapshot(campaign.id)
+            .filterNot { it.content.startsWith("[DM Conversation]") }
+            .takeLast(5)
 
         fun fact(kind: String, text: String, id: Long) = JSONObject()
             .put("id", id.toString())
