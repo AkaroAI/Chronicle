@@ -398,9 +398,14 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
 @Composable
 private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
     val msgs by vm.messages.collectAsState()
+    val characters by vm.characters.collectAsState()
     val gen by vm.isGenerating.collectAsState()
     val scanning by vm.isReviewScanning.collectAsState()
     var input by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("Story") }
+    var actor by remember { mutableStateOf("Player") }
+    var intent by remember { mutableStateOf("Action") }
+    var target by remember { mutableStateOf("Scene") }
 
     Column(Modifier.fillMaxSize()) {
         Text(
@@ -423,15 +428,25 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
             if (gen) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
 
-        Row(
+        Surface(
             Modifier.fillMaxWidth().padding(10.dp),
-            verticalAlignment = Alignment.Bottom
+            shape = RoundedCornerShape(24.dp),
+            color = ChronicleColors.Surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .38f)),
+            shadowElevation = 12.dp
         ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { RouteSelector(actor, listOf("Player") + characters.map { it.name }, { actor = it }, Icons.Default.Person) }
+                item { RouteSelector(intent, listOf("Talking to", "Action", "Observing", "Thinking"), { intent = it }, Icons.Default.Bolt) }
+                item { RouteSelector(target, listOf("Scene", "DM") + characters.map { it.name }, { target = it }, Icons.Default.NearMe) }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(
                 input,
                 { input = it },
                 Modifier.weight(1f),
-                placeholder = { Text("Continue the story…") },
+                placeholder = { Text(if (mode == "DM") "Talk with your DM…" else "Continue the story…") },
                 maxLines = 5
             )
             Spacer(Modifier.width(8.dp))
@@ -439,11 +454,38 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
                 onClick = {
                     val t = input
                     input = ""
-                    vm.sendMessage(t)
+                    vm.sendMessage(t, mode, actor, intent, target)
                 },
                 enabled = input.isNotBlank() && !gen
             ) {
                 Icon(Icons.Default.Send, "Send")
+            }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Story", "DM", "Command").forEach { item ->
+                    FilterChip(
+                        selected = mode == item,
+                        onClick = {
+                            mode = item
+                            if (item == "DM") { actor = "Player"; target = "DM"; intent = "Talking to" }
+                        },
+                        label = { Text(item) }
+                    )
+                }
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun RouteSelector(value: String, options: List<String>, onSelect: (String) -> Unit, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        AssistChip(onClick = { expanded = true }, label = { Text(value) }, leadingIcon = { Icon(icon, null) })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.distinct().forEach { option ->
+                DropdownMenuItem(text = { Text(option) }, onClick = { onSelect(option); expanded = false })
             }
         }
     }
@@ -452,6 +494,8 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
 @Composable
 private fun MessageBubble(m: MessageEntity) {
     val u = m.role == "user"
+    val route = m.content.lineSequence().firstOrNull()?.takeIf { it.startsWith("[") && it.endsWith("]") }
+    val displayContent = if (route != null) m.content.substringAfter('\n', "") else m.content
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
@@ -466,7 +510,8 @@ private fun MessageBubble(m: MessageEntity) {
                 .padding(12.dp)
         ) {
             Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
-            Text(m.content)
+            route?.let { Text(it.removeSurrounding("[", "]"), color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelSmall) }
+            Text(displayContent)
         }
     }
 }
@@ -475,26 +520,63 @@ private fun MessageBubble(m: MessageEntity) {
 private fun MemoryTab(vm: ChronicleViewModel) {
     val mem by vm.memories.collectAsState()
     var add by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("All") }
+    val categories = listOf("All") + mem.map { it.category }.distinct().sorted()
+    val visible = mem.filter {
+        (category == "All" || it.category == category) &&
+            (query.isBlank() || it.title.contains(query, true) || it.content.contains(query, true))
+    }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("Campaign Memory", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = { add = true }) { Text("Add") }
+            Column {
+                Text("Lore & Memory", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("The campaign's approved source of truth", color = ChronicleColors.MutedInk)
+            }
+            FilledTonalIconButton(onClick = { add = true }) { Icon(Icons.Default.Add, "Add memory") }
         }
-
+        Spacer(Modifier.height(14.dp))
+        OutlinedTextField(
+            query, { query = it }, Modifier.fillMaxWidth(), singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            placeholder = { Text("Search approved lore…") },
+            shape = RoundedCornerShape(18.dp)
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
+            items(categories) { item ->
+                FilterChip(selected = category == item, onClick = { category = item }, label = { Text(item) })
+            }
+        }
+        if (visible.isEmpty()) {
+            ChronicleEmptyState(
+                if (mem.isEmpty()) "No campaign lore established yet." else "Nothing matches this view.",
+                if (mem.isEmpty()) "Approved memories and canon will appear here." else "Try another search or category."
+            )
+        }
         LazyColumn(
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(mem, key = { it.id }) { m ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
+            items(visible, key = { it.id }) { m ->
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = ChronicleColors.Surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .28f)),
+                    shadowElevation = 8.dp
+                ) {
                     Column(Modifier.padding(12.dp)) {
-                        Text("${m.category} • ${m.title}", fontWeight = FontWeight.Bold)
+                        Text(m.category, color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelMedium)
+                        Text(m.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(5.dp))
                         Text(m.content)
-                        TextButton(onClick = { vm.deleteMemory(m) }) { Text("Remove") }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { vm.deleteMemory(m) }) { Text("Remove") }
+                        }
                     }
                 }
             }

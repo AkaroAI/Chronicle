@@ -523,10 +523,17 @@ class ChronicleViewModel(
             maybeResumePendingCanonTurn()
         }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(
+        text: String,
+        mode: String = "Story",
+        actor: String = "Player",
+        intent: String = "Action",
+        target: String = "Scene"
+    ) {
         val campaign = selectedCampaign.value ?: return
         if (text.isBlank() || _isGenerating.value) return
-        if (_pendingCanonTurn.value != null) {
+        val dmConversation = mode.equals("DM", true)
+        if (_pendingCanonTurn.value != null && !dmConversation) {
             _notice.value = "This turn is waiting for Review. Resolve its canon proposals before sending another story action."
             return
         }
@@ -537,17 +544,29 @@ class ChronicleViewModel(
             _lastError.value = null
 
             try {
-                repository.addMessage(campaign.id, "user", text)
+                val routedText = if (dmConversation) {
+                    "[DM Conversation]\n$text"
+                } else {
+                    "[Story | Actor: $actor | Intent: $intent | Target: $target]\n$text"
+                }
+                repository.addMessage(campaign.id, "user", routedText)
                 val pendingBeforeTurn = repository.pendingProposalIds(campaign.id)
+
+                val provider: AiProvider =
+                    if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
+                    else ChronicleDemoProvider()
+
+                if (dmConversation) {
+                    _turnPhase.value = "DM_CONVERSATION"
+                    generateDmReply(campaign, provider)
+                    _turnPhase.value = "IDLE"
+                    return@launch
+                }
 
                 // Phase 1: deterministic canon detection.
                 repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
                 repository.proposeExplicitQuestCommand(campaign.id, text)
                 repository.proposeExplicitCampaignYear(campaign.id, text)
-
-                val provider: AiProvider =
-                    if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
-                    else ChronicleDemoProvider()
 
                 // Canon-changing player statements are reviewed before the storyteller can use
                 // them. This activates the existing pending-turn resume path instead of allowing
@@ -557,7 +576,7 @@ class ChronicleViewModel(
                     scanForProposals(
                         campaign = latestCampaign,
                         context = repository.buildAutomationContextSnapshot(latestCampaign),
-                        userText = text,
+                        userText = routedText,
                         assistantReply = "",
                         provider = provider
                     )
@@ -565,7 +584,7 @@ class ChronicleViewModel(
 
                 val preStoryPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
                 if (preStoryPending.isNotEmpty()) {
-                    _pendingCanonTurn.value = text
+                    _pendingCanonTurn.value = routedText
                     _pendingTurnProposalIds = preStoryPending
                     _turnPhase.value = "AWAITING_REVIEW"
                     _notice.value = "Review ${preStoryPending.size} canon suggestion${if (preStoryPending.size == 1) "" else "s"} before the story continues."
@@ -573,7 +592,7 @@ class ChronicleViewModel(
                 }
 
                 _turnPhase.value = "GENERATING_STORY"
-                val assistantReply = generateStoryReply(campaign, text, provider)
+                val assistantReply = generateStoryReply(campaign, routedText, provider)
 
                 // Analyze the completed exchange. Chronicle remains the sole authority:
                 // suggestions stay inert in Review until the player approves them.
@@ -583,7 +602,7 @@ class ChronicleViewModel(
                     scanForProposals(
                         campaign = latestCampaign,
                         context = repository.buildAutomationContextSnapshot(latestCampaign),
-                        userText = text,
+                        userText = routedText,
                         assistantReply = assistantReply,
                         provider = provider
                     )
@@ -603,6 +622,28 @@ class ChronicleViewModel(
                 }
             }
         }
+    }
+
+    private suspend fun generateDmReply(campaign: CampaignEntity, provider: AiProvider) {
+        val history = repository.recentMessages(campaign.id, 8).map {
+            ProviderMessage(it.role, it.content)
+        }
+        val reply = provider.generate(
+            ProviderRequest(
+                systemPrompt = """
+                    You are Chronicle's friendly out-of-world DM companion.
+                    Speak directly with the player about the campaign, planning, comfort, ideas, or the app itself.
+                    Do not narrate a scene, speak as a character, advance time, or decide player actions.
+                    This channel is non-canonical. Never generate lore, state changes, proposals, character facts, quests, locations, or timeline events from it.
+                    If the player says only hello, greet them naturally and ask what they would like to discuss.
+                """.trimIndent(),
+                memoryContext = "",
+                messages = history,
+                temperature = .7,
+                nativeEnginePayload = repository.buildStructuredEnginePayload(campaign)
+            )
+        )
+        repository.addMessage(campaign.id, "assistant", "[DM Conversation]\n${reply.trim()}")
     }
 
     private suspend fun generateStoryReply(
