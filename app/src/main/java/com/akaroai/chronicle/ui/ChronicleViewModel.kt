@@ -89,6 +89,7 @@ class ChronicleViewModel(
     val pendingCanonTurn = _pendingCanonTurn.asStateFlow()
     private var _pendingTurnProposalIds: Set<Long> = emptySet()
     private var pendingTurnNeedsFinalRegeneration = false
+    private var pendingTurnResolutionDirective = ""
     private var resumePendingTurnJob: Job? = null
 
     private val _turnPhase = MutableStateFlow("IDLE")
@@ -267,6 +268,11 @@ class ChronicleViewModel(
     fun saveProviderSettings(s: ProviderSettings) {
         settingsStore.save(s)
         _providerSettings.value = settingsStore.load()
+        _notice.value = if (s.enabled) {
+            "AI connection saved. Chronicle will use ${s.model.ifBlank { "the selected model" }}."
+        } else {
+            "Demo mode enabled."
+        }
     }
 
     fun selectCampaign(id: Long) { selectedId.value = id }
@@ -612,11 +618,15 @@ class ChronicleViewModel(
     private suspend fun completeStoryTurn(
         campaign: CampaignEntity,
         userText: String,
-        provider: AiProvider
+        provider: AiProvider,
+        resolutionDirective: String = ""
     ) {
         val pendingBeforeDraft = repository.pendingProposalIds(campaign.id)
         _turnPhase.value = "GENERATING_DRAFT"
-        val draft = generateStoryReply(campaign, userText, provider, persist = false)
+        val draft = generateStoryReply(
+            campaign, userText, provider, persist = false,
+            resolutionDirective = resolutionDirective
+        )
 
         if (_providerSettings.value.enabled) {
             _turnPhase.value = "POST_STORY_SCAN"
@@ -635,6 +645,7 @@ class ChronicleViewModel(
             _pendingCanonTurn.value = userText
             _pendingTurnProposalIds = postStoryPending
             pendingTurnNeedsFinalRegeneration = true
+            pendingTurnResolutionDirective = resolutionDirective
             _turnPhase.value = "AWAITING_RESPONSE_REVIEW"
             _notice.value = "Review ${postStoryPending.size} suggestion${if (postStoryPending.size == 1) "" else "s"} from the draft before Chronicle publishes the response."
         } else {
@@ -719,13 +730,28 @@ class ChronicleViewModel(
         campaign: CampaignEntity,
         userText: String,
         provider: AiProvider,
-        persist: Boolean = true
+        persist: Boolean = true,
+        resolutionDirective: String = ""
     ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
         val history = repository.recentMessages(campaign.id, 30)
             .filterNot { it.content.startsWith("[DM Conversation]") }
             .takeLast(5)
             .map { ProviderMessage(it.role, it.content) }
+            .toMutableList()
+
+        // Do not feed the rejected wording back as the newest instruction. The exact outcome
+        // remains available below, while approved state comes from the fresh database snapshot.
+        if (resolutionDirective.contains("REJECTED:")) {
+            val lastUserIndex = history.indexOfLast { it.role == "user" }
+            if (lastUserIndex >= 0) {
+                history[lastUserIndex] = ProviderMessage(
+                    "user",
+                    "[Resolved turn] Chronicle Review rejected part or all of the proposed event. " +
+                        "Continue only from approved canon and the REVIEW OUTCOME; do not replay the rejected wording."
+                )
+            }
+        }
 
         val system = """
             You are Chronicle's campaign storyteller and GM.
@@ -749,6 +775,12 @@ class ChronicleViewModel(
             - Approved World, Quest, Timeline, Memory, Campaign, and Character records in context govern continuity.
             - Use exact canonical location and quest names where possible.
             - If a fact is absent from approved canon, do not pretend it was accepted.
+
+            REVIEW OUTCOME FOR THIS TURN
+            ${resolutionDirective.ifBlank { "No additional review outcome was supplied." }}
+            A rejected proposal means that event or fact DID NOT BECOME TRUE. Do not narrate it,
+            echo it, imply it, or preserve it as atmosphere. An edited approval must use the edited
+            canonical value, even when the player's original wording or recent draft used another value.
 
             STORY RULES
             Preserve established canon, causal continuity, character autonomy, tone, and consequences.
@@ -805,6 +837,20 @@ class ChronicleViewModel(
             val unresolvedNew = repository.pendingProposalIds(campaign.id).intersect(_pendingTurnProposalIds)
             if (unresolvedNew.isNotEmpty()) return@launch
 
+            val resolved = repository.proposalsSnapshot(campaign.id)
+                .filter { it.id in _pendingTurnProposalIds }
+            val resolutionDirective = buildString {
+                if (pendingTurnResolutionDirective.isNotBlank()) {
+                    appendLine(pendingTurnResolutionDirective)
+                }
+                resolved.filter { it.status == "Approved" }.forEach {
+                    appendLine("APPROVED: ${it.summary}; canonical changes=${it.proposedChanges}")
+                }
+                resolved.filter { it.status == "Rejected" || it.status == "Superseded" }.forEach {
+                    appendLine("REJECTED: ${it.summary}; forbidden proposed fact=${it.proposedChanges}")
+                }
+            }.trim()
+
             _pendingCanonTurn.value = null
             _pendingTurnProposalIds = emptySet()
             _isGenerating.value = true
@@ -816,9 +862,14 @@ class ChronicleViewModel(
                 if (pendingTurnNeedsFinalRegeneration) {
                     pendingTurnNeedsFinalRegeneration = false
                     _turnPhase.value = "REGENERATING_FROM_CANON"
-                    generateStoryReply(campaign, userText, provider, persist = true)
+                    generateStoryReply(
+                        campaign, userText, provider, persist = true,
+                        resolutionDirective = resolutionDirective
+                    )
+                    pendingTurnResolutionDirective = ""
                 } else {
-                    completeStoryTurn(campaign, userText, provider)
+                    completeStoryTurn(campaign, userText, provider, resolutionDirective)
+                    if (_pendingCanonTurn.value == null) pendingTurnResolutionDirective = ""
                 }
                 if (_pendingCanonTurn.value == null) _turnPhase.value = "IDLE"
             } catch (t: Throwable) {

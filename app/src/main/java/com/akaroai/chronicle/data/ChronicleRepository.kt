@@ -29,6 +29,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             .map { it.id }
             .toSet()
 
+    suspend fun proposalsSnapshot(campaignId: Long): List<ChangeProposalEntity> =
+        dao.proposalsSnapshot(campaignId)
+
     suspend fun recentMessages(campaignId: Long, limit: Int): List<MessageEntity> =
         dao.messagesSnapshot(campaignId).takeLast(limit.coerceAtLeast(1))
 
@@ -431,6 +434,36 @@ class ChronicleRepository(private val dao: ChronicleDao) {
 
         var created = 0
 
+        // "Yuki leaves Asira at Moonfall Village ..." establishes Asira's position even
+        // though she does not move. Persist that independent map anchor when it is missing.
+        Regex("""(?i)\b[A-Za-z][A-Za-z'’-]*\s+leaves?\s+([A-Za-z][A-Za-z'’-]*)\s+(?:behind\s+)?at\s+([A-Za-z][A-Za-z'’ -]{1,80})\s+(?:and|to|while|before|after|\.|,|$)""")
+            .findAll(text)
+            .forEach { match ->
+                val name = match.groupValues[1].trim()
+                val destination = match.groupValues[2].trim().trim('.', ',')
+                val character = characters.firstOrNull { it.name.equals(name, true) } ?: return@forEach
+                val currentRecorded = character.currentLocation.ifBlank { latestRecordedCharacterLocation(character.notes) }
+                if (destination.isNotBlank() && normalizeLocationIdentity(currentRecorded) != normalizeLocationIdentity(destination)) {
+                    addProposal(
+                        ChangeProposalEntity(
+                            campaignId = campaignId,
+                            summary = "${character.name} remains at $destination",
+                            targetType = "character_update",
+                            targetId = character.id,
+                            proposedChanges = JSONObject().put("fields", JSONObject()
+                                .put("currentLocation", destination)
+                                .put("notes", "Currently at $destination.")).toString(),
+                            reason = "The player explicitly established where ${character.name} stays.",
+                            groupType = "Characters",
+                            groupLabel = character.name,
+                            changeMode = "Append",
+                            evidenceType = "Player Confirmed"
+                        )
+                    )
+                    created++
+                }
+            }
+
         for (clause in clauses) {
             if (!movementWords.containsMatchIn(clause)) continue
 
@@ -662,7 +695,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
 
         val newPatterns = listOf(
             Regex("""(?i)\b(?:add|create|start|begin|track)\s+(?:a\s+|new\s+)?quest(?:\s+(?:called|named|titled))?\s*[:\-]?\s*(.+)"""),
-            Regex("""(?i)\b(?:our\s+)?(?:new\s+|active\s+)?quest\s+is\s+(?:to\s+)?(.+)""")
+            Regex("""(?i)\b(?:our\s+)?(?:new\s+|active\s+)?quest\s+is\s+(?:to\s+)?(.+)"""),
+            Regex("""(?i)^\s*quest\s*[,;:\-]\s*(?:is\s+|to\s+)?(.+)""")
         )
         val match = newPatterns.firstNotNullOfOrNull { it.find(clean) }
         if (match != null) {
@@ -936,7 +970,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             oldPending.forEach { old ->
                 dao.updateProposal(old.copy(status = "Superseded", supersededById = newId))
             }
-        } else if (newFields.isNotEmpty()) {
+        } else if (proposal.targetType != "character_new" && newFields.isNotEmpty()) {
             oldPending.forEach { old ->
                 val overlap = ProposalParser.changedFieldNames(old.proposedChanges).intersect(newFields)
                 if (overlap.isNotEmpty()) {
