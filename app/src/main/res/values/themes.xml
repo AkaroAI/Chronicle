@@ -1,6 +1,9 @@
 <resources>
-    <style name="Theme.Chronicle" parent="android:style/Theme.Material.Light.NoActionBar">
+    <style name="Theme.Chronicle" parent="android:style/Theme.Material.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#060A19</item>
+        <item name="android:navigationBarColor">#060A19</item>
+        <item name="android:windowLightNavigationBar">false</item>
     </style>
 </resources>

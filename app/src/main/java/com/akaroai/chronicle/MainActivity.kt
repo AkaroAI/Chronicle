@@ -3,10 +3,10 @@ package com.akaroai.chronicle
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.material3.MaterialTheme
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.ui.ChronicleScreen
+import com.akaroai.chronicle.ui.ChronicleTheme
 import com.akaroai.chronicle.ui.ChronicleViewModel
 
 class MainActivity : ComponentActivity() {
@@ -17,7 +17,7 @@ class MainActivity : ComponentActivity() {
         val repository = ChronicleRepository(app.database.dao())
 
         setContent {
-            MaterialTheme {
+            ChronicleTheme {
                 val vm: ChronicleViewModel = viewModel(
                     factory = ChronicleViewModel.Factory(
                         repository = repository,

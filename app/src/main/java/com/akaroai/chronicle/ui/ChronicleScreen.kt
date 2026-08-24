@@ -74,7 +74,12 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(error) {
         error?.let {
-            snack.showSnackbar(it)
+            snack.showSnackbar(
+                message = it,
+                actionLabel = "Details",
+                withDismissAction = true,
+                duration = SnackbarDuration.Long
+            )
             vm.clearError()
         }
     }
@@ -86,7 +91,10 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snack) },
+        containerColor = ChronicleColors.Void,
+        snackbarHost = {
+            SnackbarHost(snack) { ChronicleSpiritSnackbar(it) }
+        },
         topBar = {
             TopAppBar(
                 title = {
