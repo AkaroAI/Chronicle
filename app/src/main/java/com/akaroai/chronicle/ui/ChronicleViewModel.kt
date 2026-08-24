@@ -567,6 +567,7 @@ class ChronicleViewModel(
                 repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
                 repository.proposeExplicitQuestCommand(campaign.id, text)
                 repository.proposeExplicitCampaignYear(campaign.id, text)
+                proposeExplicitPairedInteraction(campaign.id, text)
 
                 // Canon-changing player statements are reviewed before the storyteller can use
                 // them. This activates the existing pending-turn resume path instead of allowing
@@ -621,6 +622,60 @@ class ChronicleViewModel(
                     _turnPhase.value = "IDLE"
                 }
             }
+        }
+    }
+
+    private suspend fun proposeExplicitPairedInteraction(campaignId: Long, rawText: String) {
+        val text = rawText.substringAfter('\n', rawText).trim()
+        val match = Regex(
+            """^([\p{L}][\p{L}'-]*)\s+and\s+([\p{L}][\p{L}'-]*)\s+(hold hands|are holding hands|hug|kiss)\b""",
+            RegexOption.IGNORE_CASE
+        ).find(text) ?: return
+        val first = match.groupValues[1].replaceFirstChar { it.titlecase() }
+        val second = match.groupValues[2].replaceFirstChar { it.titlecase() }
+        val action = match.groupValues[3].lowercase()
+        val existing = repository.charactersSnapshot(campaignId)
+
+        for (name in listOf(first, second)) {
+            if (existing.none { it.name.equals(name, true) || it.aliases.split(',').any { alias -> alias.trim().equals(name, true) } }) {
+                repository.addProposal(
+                    ChangeProposalEntity(
+                        campaignId = campaignId,
+                        summary = "Create character sheet for $name",
+                        targetType = "character_new",
+                        proposedChanges = JSONObject()
+                            .put("name", name).put("aliases", "").put("species", "").put("age", "")
+                            .put("pronouns", "").put("appearance", "").put("personality", "")
+                            .put("backstory", "").put("abilities", "").put("equipment", "")
+                            .put("relationship", "").put("affiliations", "").put("goals", "")
+                            .put("fears", "").put("secrets", "").put("injuries", "")
+                            .put("notes", "").put("currentLocation", "").put("status", "Active")
+                            .put("castTier", "Supporting").toString(),
+                        reason = "$name was explicitly named by the player in a durable character interaction.",
+                        groupType = "Characters",
+                        groupLabel = name,
+                        evidenceType = "Player Confirmed"
+                    )
+                )
+            }
+        }
+
+        existing.filter { it.name.equals(first, true) || it.name.equals(second, true) }.forEach { character ->
+            val other = if (character.name.equals(first, true)) second else first
+            repository.addProposal(
+                ChangeProposalEntity(
+                    campaignId = campaignId,
+                    summary = "Record ${character.name}'s interaction with $other",
+                    targetType = "character_update",
+                    targetId = character.id,
+                    proposedChanges = JSONObject().put("fields", JSONObject().put("notes", "$action with $other.")).toString(),
+                    reason = "The player explicitly stated that ${character.name} and $other $action.",
+                    groupType = "Relationships",
+                    groupLabel = "$first & $second",
+                    changeMode = "Append",
+                    evidenceType = "Player Confirmed"
+                )
+            )
         }
     }
 
