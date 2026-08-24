@@ -19,9 +19,18 @@ import androidx.compose.ui.unit.dp
 
 enum class SpiritMood { ERROR, WARNING, OFFLINE, SUCCESS, INFO }
 
+data class ChronicleSpiritVisuals(
+    override val message: String,
+    val mood: SpiritMood,
+    override val actionLabel: String? = null,
+    override val withDismissAction: Boolean = true,
+    override val duration: SnackbarDuration = SnackbarDuration.Long
+) : SnackbarVisuals
+
 @Composable
 fun ChronicleSpiritSnackbar(data: SnackbarData) {
-    val mood = if (data.visuals.actionLabel == "Details") SpiritMood.ERROR else SpiritMood.SUCCESS
+    val mood = (data.visuals as? ChronicleSpiritVisuals)?.mood
+        ?: if (data.visuals.actionLabel == "Details") SpiritMood.ERROR else SpiritMood.INFO
     val accent = when (mood) {
         SpiritMood.ERROR -> ChronicleColors.Lavender
         SpiritMood.WARNING -> ChronicleColors.Amber

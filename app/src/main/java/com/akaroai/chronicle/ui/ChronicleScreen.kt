@@ -53,6 +53,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     var deleteDlg by remember { mutableStateOf(false) }
     var importChoice by remember { mutableStateOf<Uri?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var campaignMenu by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip")
@@ -75,18 +76,17 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(error) {
         error?.let {
-            snack.showSnackbar(
-                message = it,
-                actionLabel = "Details",
-                withDismissAction = true,
-                duration = SnackbarDuration.Long
-            )
+            val mood = if (
+                it.contains("connect", true) || it.contains("offline", true) || it.contains("timed out", true)
+            ) SpiritMood.OFFLINE else SpiritMood.ERROR
+            snack.showSnackbar(ChronicleSpiritVisuals(it, mood, actionLabel = "Details"))
             vm.clearError()
         }
     }
     LaunchedEffect(notice) {
         notice?.let {
-            snack.showSnackbar(it)
+            val mood = if (it.contains("Review", true) || it.contains("waiting", true)) SpiritMood.WARNING else SpiritMood.SUCCESS
+            snack.showSnackbar(ChronicleSpiritVisuals(it, mood))
             vm.clearNotice()
         }
     }
@@ -99,14 +99,40 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("Chronicle", fontWeight = FontWeight.Bold)
-                        Text(
-                            selected?.name ?: "No campaign selected",
-                            style = MaterialTheme.typography.labelMedium
-                        )
+                    Box {
+                        Surface(
+                            modifier = Modifier.clickable { campaignMenu = true },
+                            shape = RoundedCornerShape(18.dp),
+                            color = ChronicleColors.Surface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .35f))
+                        ) {
+                            Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column {
+                                    Text(selected?.name ?: "Choose a campaign", fontWeight = FontWeight.Bold)
+                                    Text("Chronicle", style = MaterialTheme.typography.labelSmall, color = ChronicleColors.MutedInk)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Icon(Icons.Default.ExpandMore, "Switch campaign")
+                            }
+                        }
+                        DropdownMenu(campaignMenu, { campaignMenu = false }) {
+                            campaigns.forEach { campaign ->
+                                DropdownMenuItem(
+                                    text = { Text(campaign.name) },
+                                    onClick = { vm.selectCampaign(campaign.id); campaignMenu = false },
+                                    leadingIcon = { if (campaign.id == selected?.id) Icon(Icons.Default.Check, null) }
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("New campaign") },
+                                onClick = { campaignMenu = false; create = true },
+                                leadingIcon = { Icon(Icons.Default.Add, null) }
+                            )
+                        }
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ChronicleColors.Void),
                 actions = {
                     IconButton(onClick = { provider = true }) {
                         Icon(Icons.Default.Settings, "AI settings")
@@ -211,26 +237,6 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
         Column(Modifier.fillMaxSize().padding(end = 64.dp)) {
-            LazyRow(
-                Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(campaigns, key = { it.id }) { c ->
-                    FilterChip(
-                        selected = c.id == selected?.id,
-                        onClick = { vm.selectCampaign(c.id) },
-                        label = { Text(c.name) }
-                    )
-                }
-                item {
-                    AssistChip(
-                        onClick = { create = true },
-                        label = { Text("New campaign") },
-                        leadingIcon = { Icon(Icons.Default.Add, null) }
-                    )
-                }
-            }
-
             if (selected == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
