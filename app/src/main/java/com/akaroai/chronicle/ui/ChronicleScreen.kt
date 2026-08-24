@@ -23,11 +23,12 @@ import com.akaroai.chronicle.model.*
 
 enum class ChronicleTab(val label: String) {
     CHAT("Chat"),
-    MEMORY("Memory"),
+    REVIEW("Review"),
     CHARACTERS("Characters"),
     WORLD("World"),
+    QUESTS("Quests"),
     TIMELINE("Timeline"),
-    REVIEW("Review")
+    MEMORY("Lore & Memory")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -206,50 +207,10 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     }
                 }
             )
-        },
-        bottomBar = {
-            NavigationBar {
-                ChronicleTab.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = tab == item,
-                        onClick = { tab = item },
-                        icon = {
-                            if (item == ChronicleTab.REVIEW) {
-                                BadgedBox(
-                                    badge = {
-                                        if (proposals.isNotEmpty()) {
-                                            Badge {
-                                                Text(
-                                                    if (proposals.size > 99) "99+"
-                                                    else proposals.size.toString()
-                                                )
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Icon(Icons.Default.Notifications, item.label)
-                                }
-                            } else {
-                                Icon(
-                                    when (item) {
-                                        ChronicleTab.CHAT -> Icons.Default.Chat
-                                        ChronicleTab.MEMORY -> Icons.Default.Book
-                                        ChronicleTab.CHARACTERS -> Icons.Default.Groups
-                                        ChronicleTab.WORLD -> Icons.Default.Public
-                                        ChronicleTab.TIMELINE -> Icons.Default.History
-                                        ChronicleTab.REVIEW -> Icons.Default.Notifications
-                                    },
-                                    item.label
-                                )
-                            }
-                        },
-                        label = { Text(item.label) }
-                    )
-                }
-            }
         }
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
+        Box(Modifier.padding(pad).fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(end = 64.dp)) {
             LazyRow(
                 Modifier.fillMaxWidth().padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -313,10 +274,18 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     ChronicleTab.MEMORY -> MemoryTab(vm)
                     ChronicleTab.CHARACTERS -> CharactersTab(vm)
                     ChronicleTab.WORLD -> WorldTab(vm)
+                    ChronicleTab.QUESTS -> QuestsTab(vm)
                     ChronicleTab.TIMELINE -> TimelineTab(vm)
                     ChronicleTab.REVIEW -> ReviewTab(vm)
                 }
             }
+        }
+        LivingNavigationRail(
+            selected = tab,
+            proposalCount = proposals.size,
+            onSelect = { tab = it },
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
         }
     }
 
