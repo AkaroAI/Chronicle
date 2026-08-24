@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import org.json.JSONObject
 
 class ChronicleViewModel(
@@ -87,6 +88,8 @@ class ChronicleViewModel(
     private val _pendingCanonTurn = MutableStateFlow<String?>(null)
     val pendingCanonTurn = _pendingCanonTurn.asStateFlow()
     private var _pendingTurnProposalIds: Set<Long> = emptySet()
+    private var pendingTurnNeedsFinalRegeneration = false
+    private var resumePendingTurnJob: Job? = null
 
     private val _turnPhase = MutableStateFlow("IDLE")
     val turnPhase = _turnPhase.asStateFlow()
@@ -533,7 +536,8 @@ class ChronicleViewModel(
     ) {
         val campaign = selectedCampaign.value ?: return
         if (text.isBlank() || _isGenerating.value) return
-        val dmConversation = mode.equals("DM", true)
+        val dmConversation = mode.equals("DM", true) ||
+            (target.equals("DM", true) && intent.equals("Talking to", true))
         if (_pendingCanonTurn.value != null && !dmConversation) {
             _notice.value = "This turn is waiting for Review. Resolve its canon proposals before sending another story action."
             return
@@ -593,28 +597,7 @@ class ChronicleViewModel(
                     return@launch
                 }
 
-                _turnPhase.value = "GENERATING_STORY"
-                val assistantReply = generateStoryReply(campaign, routedText, provider)
-
-                // Analyze the completed exchange. Chronicle remains the sole authority:
-                // suggestions stay inert in Review until the player approves them.
-                if (_providerSettings.value.enabled) {
-                    _turnPhase.value = "ANALYZING_CANON"
-                    val latestCampaign = repository.campaignById(campaign.id) ?: campaign
-                    scanForProposals(
-                        campaign = latestCampaign,
-                        context = repository.buildAutomationContextSnapshot(latestCampaign),
-                        userText = routedText,
-                        assistantReply = assistantReply,
-                        provider = provider
-                    )
-                }
-
-                val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
-                if (newPending.isNotEmpty()) {
-                    _notice.value = "${newPending.size} canon suggestion${if (newPending.size == 1) "" else "s"} ready in Review."
-                }
-                _turnPhase.value = "IDLE"
+                completeStoryTurn(campaign, routedText, provider)
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
             } finally {
@@ -623,6 +606,40 @@ class ChronicleViewModel(
                     _turnPhase.value = "IDLE"
                 }
             }
+        }
+    }
+
+    private suspend fun completeStoryTurn(
+        campaign: CampaignEntity,
+        userText: String,
+        provider: AiProvider
+    ) {
+        val pendingBeforeDraft = repository.pendingProposalIds(campaign.id)
+        _turnPhase.value = "GENERATING_DRAFT"
+        val draft = generateStoryReply(campaign, userText, provider, persist = false)
+
+        if (_providerSettings.value.enabled) {
+            _turnPhase.value = "POST_STORY_SCAN"
+            val latestCampaign = repository.campaignById(campaign.id) ?: campaign
+            scanForProposals(
+                campaign = latestCampaign,
+                context = repository.buildAutomationContextSnapshot(latestCampaign),
+                userText = userText,
+                assistantReply = draft,
+                provider = provider
+            )
+        }
+
+        val postStoryPending = repository.pendingProposalIds(campaign.id) - pendingBeforeDraft
+        if (postStoryPending.isNotEmpty()) {
+            _pendingCanonTurn.value = userText
+            _pendingTurnProposalIds = postStoryPending
+            pendingTurnNeedsFinalRegeneration = true
+            _turnPhase.value = "AWAITING_RESPONSE_REVIEW"
+            _notice.value = "Review ${postStoryPending.size} suggestion${if (postStoryPending.size == 1) "" else "s"} from the draft before Chronicle publishes the response."
+        } else {
+            repository.addMessage(campaign.id, "assistant", draft)
+            _turnPhase.value = "IDLE"
         }
     }
 
@@ -701,7 +718,8 @@ class ChronicleViewModel(
     private suspend fun generateStoryReply(
         campaign: CampaignEntity,
         userText: String,
-        provider: AiProvider
+        provider: AiProvider,
+        persist: Boolean = true
     ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
         val history = repository.recentMessages(campaign.id, 30)
@@ -772,35 +790,43 @@ class ChronicleViewModel(
             error("Story generation was rejected before it could enter campaign history: ${validation.reason}")
         }
 
-        repository.addMessage(campaign.id, "assistant", reply)
+        if (persist) repository.addMessage(campaign.id, "assistant", reply)
         return reply
     }
 
     private fun maybeResumePendingCanonTurn() {
-        val userText = _pendingCanonTurn.value ?: return
-        val campaign = selectedCampaign.value ?: return
-        viewModelScope.launch {
+        if (_pendingCanonTurn.value == null || resumePendingTurnJob?.isActive == true) return
+        resumePendingTurnJob = viewModelScope.launch {
             // Approval/rejection writes happen immediately, but group operations may resolve several
             // rows in sequence. Briefly let the transaction settle before deciding to resume.
             delay(120)
+            val userText = _pendingCanonTurn.value ?: return@launch
+            val campaign = selectedCampaign.value ?: return@launch
             val unresolvedNew = repository.pendingProposalIds(campaign.id).intersect(_pendingTurnProposalIds)
             if (unresolvedNew.isNotEmpty()) return@launch
 
             _pendingCanonTurn.value = null
+            _pendingTurnProposalIds = emptySet()
             _isGenerating.value = true
             _turnPhase.value = "APPLYING_CANON"
             try {
                 val provider: AiProvider =
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
-                _turnPhase.value = "GENERATING_STORY"
-                generateStoryReply(campaign, userText, provider)
-                _turnPhase.value = "IDLE"
+                if (pendingTurnNeedsFinalRegeneration) {
+                    pendingTurnNeedsFinalRegeneration = false
+                    _turnPhase.value = "REGENERATING_FROM_CANON"
+                    generateStoryReply(campaign, userText, provider, persist = true)
+                } else {
+                    completeStoryTurn(campaign, userText, provider)
+                }
+                if (_pendingCanonTurn.value == null) _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not resume the pending story turn."
             } finally {
                 _isGenerating.value = false
-                _pendingTurnProposalIds = emptySet()
+                if (_pendingCanonTurn.value == null) _pendingTurnProposalIds = emptySet()
+                resumePendingTurnJob = null
             }
         }
     }
@@ -1106,6 +1132,14 @@ class ChronicleViewModel(
     private suspend fun validateStoryReply(campaignId: Long, reply: String): StoryValidation {
         val clean = reply.trim()
         if (clean.length < 12) return StoryValidation(false, "The response was empty or too short.")
+        if (
+            clean.contains("</think>", true) ||
+            clean.contains("dm_commentary:", true) ||
+            clean.contains("\"state_proposals\"", true) ||
+            clean.startsWith("{\"narrative\"")
+        ) {
+            return StoryValidation(false, "The response leaked internal model or structured-output artifacts.")
+        }
 
         val tokens = Regex("""[A-Za-z0-9']+""").findAll(clean.lowercase()).map { it.value }.toList()
         if (tokens.size >= 30) {

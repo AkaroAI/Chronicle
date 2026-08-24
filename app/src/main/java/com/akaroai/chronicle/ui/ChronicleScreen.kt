@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -85,14 +86,18 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     }
     LaunchedEffect(notice) {
         notice?.let {
-            val mood = if (it.contains("Review", true) || it.contains("waiting", true)) SpiritMood.WARNING else SpiritMood.SUCCESS
+            val mood = when {
+                it.contains("Review", true) || it.contains("suggestion", true) -> SpiritMood.INFO
+                it.contains("waiting", true) || it.contains("paused", true) -> SpiritMood.WARNING
+                else -> SpiritMood.SUCCESS
+            }
             snack.showSnackbar(ChronicleSpiritVisuals(it, mood))
             vm.clearNotice()
         }
     }
 
     Scaffold(
-        containerColor = ChronicleColors.Void,
+        containerColor = Color.Transparent,
         snackbarHost = {
             SnackbarHost(snack) { ChronicleSpiritSnackbar(it) }
         },
@@ -132,7 +137,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = ChronicleColors.Void),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ChronicleColors.Void.copy(alpha = .58f)),
                 actions = {
                     IconButton(onClick = { provider = true }) {
                         Icon(Icons.Default.Settings, "AI settings")
@@ -407,6 +412,7 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
     val characters by vm.characters.collectAsState()
     val gen by vm.isGenerating.collectAsState()
     val scanning by vm.isReviewScanning.collectAsState()
+    val phase by vm.turnPhase.collectAsState()
     var input by remember { mutableStateOf("") }
     var mode by remember { mutableStateOf("Story") }
     var actor by remember { mutableStateOf("Player") }
@@ -415,11 +421,20 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
 
     Column(Modifier.fillMaxSize()) {
         Text(
-            when {
+            when (phase) {
+                "ANALYZING_CANON" -> "First look • checking your message for canon changes…"
+                "GENERATING_DRAFT" -> "Chronicle is shaping a draft…"
+                "POST_STORY_SCAN" -> "Second look • checking the completed scene…"
+                "AWAITING_REVIEW" -> "Paused • your changes are waiting in Review"
+                "AWAITING_RESPONSE_REVIEW" -> "Draft paused • review its proposed canon before publishing"
+                "REGENERATING_FROM_CANON" -> "Rewriting from your approved canon…"
+                "DM_CONVERSATION" -> "Talking privately with your DM • non-canonical"
+                else -> when {
                 gen -> "Chronicle is writing…"
                 scanning -> "Reply complete • checking Review Inbox…"
                 real -> "AI enabled • campaign-isolated context"
                 else -> "Demo mode • tap ⚙ to connect"
+                }
             },
             Modifier.padding(12.dp),
             style = MaterialTheme.typography.labelSmall
@@ -506,18 +521,21 @@ private fun MessageBubble(m: MessageEntity) {
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
     ) {
-        Column(
-            Modifier.fillMaxWidth(.88f)
-                .background(
-                    if (u) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(16.dp)
-                )
-                .padding(12.dp)
+        Surface(
+            modifier = Modifier.fillMaxWidth(.9f),
+            shape = RoundedCornerShape(22.dp),
+            color = if (u) ChronicleColors.Violet.copy(alpha = .72f) else ChronicleColors.Surface.copy(alpha = .88f),
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                if (u) ChronicleColors.Cyan.copy(alpha = .34f) else ChronicleColors.Lavender.copy(alpha = .28f)
+            ),
+            shadowElevation = 10.dp
         ) {
-            Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
-            route?.let { Text(it.removeSurrounding("[", "]"), color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelSmall) }
-            Text(displayContent)
+            Column(Modifier.padding(14.dp)) {
+                Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
+                route?.let { Text(it.removeSurrounding("[", "]"), color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelSmall) }
+                Text(displayContent)
+            }
         }
     }
 }

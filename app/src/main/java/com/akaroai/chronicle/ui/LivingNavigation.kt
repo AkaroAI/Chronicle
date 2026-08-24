@@ -1,6 +1,8 @@
 package com.akaroai.chronicle.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -9,6 +11,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 
@@ -29,12 +34,20 @@ fun LivingNavigationRail(
     onSelect: (ChronicleTab) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier.width(64.dp),
-        shape = RoundedCornerShape(topStart = 28.dp, bottomStart = 28.dp),
-        color = ChronicleColors.Surface.copy(alpha = .96f),
-        border = BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .35f)),
-        shadowElevation = 18.dp
+    val shape = RoundedCornerShape(topStart = 30.dp, bottomStart = 30.dp)
+    Box(
+        modifier = modifier.width(64.dp)
+            .shadow(24.dp, shape)
+            .clip(shape)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        ChronicleColors.SurfaceRaised.copy(alpha = .94f),
+                        ChronicleColors.DeepNavy.copy(alpha = .88f)
+                    )
+                )
+            )
+            .border(BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .48f)), shape)
     ) {
         Column(
             Modifier.padding(vertical = 10.dp),

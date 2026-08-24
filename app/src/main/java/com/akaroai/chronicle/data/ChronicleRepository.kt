@@ -497,7 +497,11 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             }
 
             val verbMatch = movementWords.find(clause)
-            val subjectWindow = if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
+            val explicitDeparture = Regex(
+                """(?i)^(.+?)\s+leaves?\s+.+?\s+to\s+(?:go|travel|head|move)\b"""
+            ).find(clause)
+            val subjectWindow = explicitDeparture?.groupValues?.get(1)
+                ?: if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
 
             val subjects = characters
                 .filter { c ->

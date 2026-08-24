@@ -80,11 +80,18 @@ class OpenAiCompatibleProvider(
             messages.put(JSONObject().put("role", it.role).put("content", it.content))
         }
 
-        val payload = nativePayload ?: JSONObject()
-            .put("model", settings.model)
-            .put("messages", messages)
-            .put("temperature", request.temperature.coerceIn(0.0, 1.5))
-            .put("stream", false)
+        val payload = if (nativePayload != null) {
+            JSONObject(nativePayload.toString())
+                .put("messages", messages)
+                .put("system_prompt", system)
+                .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+        } else {
+            JSONObject()
+                .put("model", settings.model)
+                .put("messages", messages)
+                .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+                .put("stream", false)
+        }
 
         val httpRequest = Request.Builder()
             .url(endpoint)
