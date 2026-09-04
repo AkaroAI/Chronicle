@@ -2,6 +2,13 @@ package com.akaroai.chronicle.ui
 
 data class PairedInteraction(val first: String, val second: String, val action: String)
 
+enum class MessagePresentation {
+    NARRATION,
+    PLAYER_ACTION,
+    DIALOGUE,
+    DM
+}
+
 object ChatRouting {
     private const val DM_PREFIX = "[DM Conversation]"
 
@@ -11,6 +18,20 @@ object ChatRouting {
         if (content.lineSequence().firstOrNull()?.let { it.startsWith("[") && it.endsWith("]") } == true) {
             content.substringAfter('\n', "")
         } else content
+
+    fun presentation(content: String, role: String): MessagePresentation {
+        if (isDmConversation(content)) return MessagePresentation.DM
+        val route = content.lineSequence().firstOrNull().orEmpty()
+        if (role == "user") {
+            return if (route.contains("Intent: Talking to", ignoreCase = true)) {
+                MessagePresentation.DIALOGUE
+            } else {
+                MessagePresentation.PLAYER_ACTION
+            }
+        }
+        return if (route.contains("DM", ignoreCase = true)) MessagePresentation.DM
+        else MessagePresentation.NARRATION
+    }
 
     fun parsePairedInteraction(raw: String): PairedInteraction? {
         val text = raw.substringAfter('\n', raw).trim()

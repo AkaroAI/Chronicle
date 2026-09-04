@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ChatRoutingTest {
+    @Test
+    fun classifiesMessagePresentationWithoutChangingStoredContent() {
+        assertEquals(MessagePresentation.PLAYER_ACTION, ChatRouting.presentation("[Story | Actor: Yuki | Intent: Action | Target: Scene]\nRuns.", "user"))
+        assertEquals(MessagePresentation.DIALOGUE, ChatRouting.presentation("[Story | Actor: Yuki | Intent: Talking to | Target: Asira]\nHello.", "user"))
+        assertEquals(MessagePresentation.NARRATION, ChatRouting.presentation("The moon rises.", "assistant"))
+        assertEquals(MessagePresentation.DM, ChatRouting.presentation("[DM Conversation]\nLet's discuss canon.", "assistant"))
+    }
+
     @Test fun dmConversationIsRecognized() {
         assertTrue(ChatRouting.isDmConversation("[DM Conversation]\nHi"))
         assertFalse(ChatRouting.isDmConversation("[Story | Actor: Yuki]\nHi"))

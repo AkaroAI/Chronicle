@@ -106,14 +106,22 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                 title = {
                     Box {
                         Surface(
-                            modifier = Modifier.clickable { campaignMenu = true },
+                            modifier = Modifier
+                                .widthIn(min = 156.dp, max = 220.dp)
+                                .clickable { campaignMenu = true },
                             shape = RoundedCornerShape(18.dp),
                             color = ChronicleColors.Surface,
                             border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .35f))
                         ) {
                             Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column {
-                                    Text(selected?.name ?: "Choose a campaign", fontWeight = FontWeight.Bold)
+                                    Text(
+                                        selected?.name ?: "Choose a campaign",
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        color = ChronicleColors.Ink
+                                    )
                                     Text("Chronicle", style = MaterialTheme.typography.labelSmall, color = ChronicleColors.MutedInk)
                                 }
                                 Spacer(Modifier.width(8.dp))
@@ -521,8 +529,27 @@ private fun RouteSelector(value: String, options: List<String>, onSelect: (Strin
 @Composable
 private fun MessageBubble(m: MessageEntity) {
     val u = m.role == "user"
+    val presentation = ChatRouting.presentation(m.content, m.role)
     val route = m.content.lineSequence().firstOrNull()?.takeIf { it.startsWith("[") && it.endsWith("]") }
     val displayContent = ChatRouting.visibleContent(m.content)
+    val accent = when (presentation) {
+        MessagePresentation.NARRATION -> ChronicleColors.Lavender
+        MessagePresentation.PLAYER_ACTION -> ChronicleColors.Cyan
+        MessagePresentation.DIALOGUE -> ChronicleColors.Mint
+        MessagePresentation.DM -> ChronicleColors.Amber
+    }
+    val surfaceColor = when (presentation) {
+        MessagePresentation.NARRATION -> ChronicleColors.Surface.copy(alpha = .9f)
+        MessagePresentation.PLAYER_ACTION -> ChronicleColors.Violet.copy(alpha = .72f)
+        MessagePresentation.DIALOGUE -> ChronicleColors.SurfaceRaised.copy(alpha = .94f)
+        MessagePresentation.DM -> ChronicleColors.DeepNavy.copy(alpha = .94f)
+    }
+    val speaker = when (presentation) {
+        MessagePresentation.NARRATION -> "Chronicle • Narration"
+        MessagePresentation.PLAYER_ACTION -> "You • Action"
+        MessagePresentation.DIALOGUE -> if (u) "You • Dialogue" else "Chronicle • Dialogue"
+        MessagePresentation.DM -> if (u) "You • DM" else "Lorekeeper • Private"
+    }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
@@ -530,17 +557,17 @@ private fun MessageBubble(m: MessageEntity) {
         Surface(
             modifier = Modifier.fillMaxWidth(.9f),
             shape = RoundedCornerShape(22.dp),
-            color = if (u) ChronicleColors.Violet.copy(alpha = .72f) else ChronicleColors.Surface.copy(alpha = .88f),
+            color = surfaceColor,
             border = androidx.compose.foundation.BorderStroke(
                 1.dp,
-                if (u) ChronicleColors.Cyan.copy(alpha = .34f) else ChronicleColors.Lavender.copy(alpha = .28f)
+                accent.copy(alpha = .42f)
             ),
             shadowElevation = 10.dp
         ) {
             Column(Modifier.padding(14.dp)) {
-                Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
+                Text(speaker, fontWeight = FontWeight.Bold, color = accent)
                 route?.let { Text(it.removeSurrounding("[", "]"), color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelSmall) }
-                Text(displayContent)
+                Text(displayContent, color = ChronicleColors.Ink)
             }
         }
     }
