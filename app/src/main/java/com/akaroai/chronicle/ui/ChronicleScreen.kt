@@ -16,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -23,11 +24,12 @@ import com.akaroai.chronicle.model.*
 
 enum class ChronicleTab(val label: String) {
     CHAT("Chat"),
-    MEMORY("Memory"),
+    REVIEW("Review"),
     CHARACTERS("Characters"),
     WORLD("World"),
+    QUESTS("Quests"),
     TIMELINE("Timeline"),
-    REVIEW("Review")
+    MEMORY("Lore & Memory")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -52,6 +54,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     var deleteDlg by remember { mutableStateOf(false) }
     var importChoice by remember { mutableStateOf<Uri?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var campaignMenu by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/zip")
@@ -74,30 +77,75 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val snack = remember { SnackbarHostState() }
     LaunchedEffect(error) {
         error?.let {
-            snack.showSnackbar(it)
+            val mood = if (
+                it.contains("connect", true) || it.contains("offline", true) || it.contains("timed out", true)
+            ) SpiritMood.OFFLINE else SpiritMood.ERROR
+            snack.showSnackbar(ChronicleSpiritVisuals(it, mood, actionLabel = "Details"))
             vm.clearError()
         }
     }
     LaunchedEffect(notice) {
         notice?.let {
-            snack.showSnackbar(it)
+            val mood = when {
+                it.contains("Review", true) || it.contains("suggestion", true) -> SpiritMood.INFO
+                it.contains("waiting", true) || it.contains("paused", true) -> SpiritMood.WARNING
+                else -> SpiritMood.SUCCESS
+            }
+            snack.showSnackbar(ChronicleSpiritVisuals(it, mood))
             vm.clearNotice()
         }
     }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snack) },
+        containerColor = Color.Transparent,
+        snackbarHost = {
+            SnackbarHost(snack) { ChronicleSpiritSnackbar(it) }
+        },
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("Chronicle", fontWeight = FontWeight.Bold)
-                        Text(
-                            selected?.name ?: "No campaign selected",
-                            style = MaterialTheme.typography.labelMedium
-                        )
+                    Box {
+                        Surface(
+                            modifier = Modifier
+                                .widthIn(min = 156.dp, max = 220.dp)
+                                .clickable { campaignMenu = true },
+                            shape = RoundedCornerShape(18.dp),
+                            color = ChronicleColors.Surface,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .35f))
+                        ) {
+                            Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column {
+                                    Text(
+                                        selected?.name ?: "Choose a campaign",
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        color = ChronicleColors.Ink
+                                    )
+                                    Text("Chronicle", style = MaterialTheme.typography.labelSmall, color = ChronicleColors.MutedInk)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                Icon(Icons.Default.ExpandMore, "Switch campaign")
+                            }
+                        }
+                        DropdownMenu(campaignMenu, { campaignMenu = false }) {
+                            campaigns.forEach { campaign ->
+                                DropdownMenuItem(
+                                    text = { Text(campaign.name) },
+                                    onClick = { vm.selectCampaign(campaign.id); campaignMenu = false },
+                                    leadingIcon = { if (campaign.id == selected?.id) Icon(Icons.Default.Check, null) }
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("New campaign") },
+                                onClick = { campaignMenu = false; create = true },
+                                leadingIcon = { Icon(Icons.Default.Add, null) }
+                            )
+                        }
                     }
                 },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = ChronicleColors.Void.copy(alpha = .58f)),
                 actions = {
                     IconButton(onClick = { provider = true }) {
                         Icon(Icons.Default.Settings, "AI settings")
@@ -198,70 +246,10 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     }
                 }
             )
-        },
-        bottomBar = {
-            NavigationBar {
-                ChronicleTab.entries.forEach { item ->
-                    NavigationBarItem(
-                        selected = tab == item,
-                        onClick = { tab = item },
-                        icon = {
-                            if (item == ChronicleTab.REVIEW) {
-                                BadgedBox(
-                                    badge = {
-                                        if (proposals.isNotEmpty()) {
-                                            Badge {
-                                                Text(
-                                                    if (proposals.size > 99) "99+"
-                                                    else proposals.size.toString()
-                                                )
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Icon(Icons.Default.Notifications, item.label)
-                                }
-                            } else {
-                                Icon(
-                                    when (item) {
-                                        ChronicleTab.CHAT -> Icons.Default.Chat
-                                        ChronicleTab.MEMORY -> Icons.Default.Book
-                                        ChronicleTab.CHARACTERS -> Icons.Default.Groups
-                                        ChronicleTab.WORLD -> Icons.Default.Public
-                                        ChronicleTab.TIMELINE -> Icons.Default.History
-                                        ChronicleTab.REVIEW -> Icons.Default.Notifications
-                                    },
-                                    item.label
-                                )
-                            }
-                        },
-                        label = { Text(item.label) }
-                    )
-                }
-            }
         }
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize()) {
-            LazyRow(
-                Modifier.fillMaxWidth().padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(campaigns, key = { it.id }) { c ->
-                    FilterChip(
-                        selected = c.id == selected?.id,
-                        onClick = { vm.selectCampaign(c.id) },
-                        label = { Text(c.name) }
-                    )
-                }
-                item {
-                    AssistChip(
-                        onClick = { create = true },
-                        label = { Text("New campaign") },
-                        leadingIcon = { Icon(Icons.Default.Add, null) }
-                    )
-                }
-            }
-
+        Box(Modifier.padding(pad).fillMaxSize()) {
+        Column(Modifier.fillMaxSize().padding(end = 64.dp)) {
             if (selected == null) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
@@ -305,10 +293,18 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     ChronicleTab.MEMORY -> MemoryTab(vm)
                     ChronicleTab.CHARACTERS -> CharactersTab(vm)
                     ChronicleTab.WORLD -> WorldTab(vm)
+                    ChronicleTab.QUESTS -> QuestsTab(vm)
                     ChronicleTab.TIMELINE -> TimelineTab(vm)
                     ChronicleTab.REVIEW -> ReviewTab(vm)
                 }
             }
+        }
+        LivingNavigationRail(
+            selected = tab,
+            proposalCount = proposals.size,
+            onSelect = { tab = it },
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
         }
     }
 
@@ -421,17 +417,32 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
 @Composable
 private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
     val msgs by vm.messages.collectAsState()
+    val characters by vm.characters.collectAsState()
     val gen by vm.isGenerating.collectAsState()
     val scanning by vm.isReviewScanning.collectAsState()
+    val phase by vm.turnPhase.collectAsState()
     var input by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf("Story") }
+    var actor by remember { mutableStateOf("Player") }
+    var intent by remember { mutableStateOf("Action") }
+    var target by remember { mutableStateOf("Scene") }
 
     Column(Modifier.fillMaxSize()) {
         Text(
-            when {
+            when (phase) {
+                "ANALYZING_CANON" -> "First look • checking your message for canon changes…"
+                "GENERATING_DRAFT" -> "Chronicle is shaping a draft…"
+                "POST_STORY_SCAN" -> "Second look • checking the completed scene…"
+                "AWAITING_REVIEW" -> "Paused • your changes are waiting in Review"
+                "AWAITING_RESPONSE_REVIEW" -> "Draft paused • review its proposed canon before publishing"
+                "REGENERATING_FROM_CANON" -> "Rewriting from your approved canon…"
+                "DM_CONVERSATION" -> "Talking privately with your DM • non-canonical"
+                else -> when {
                 gen -> "Chronicle is writing…"
                 scanning -> "Reply complete • checking Review Inbox…"
                 real -> "AI enabled • campaign-isolated context"
                 else -> "Demo mode • tap ⚙ to connect"
+                }
             },
             Modifier.padding(12.dp),
             style = MaterialTheme.typography.labelSmall
@@ -446,15 +457,30 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
             if (gen) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         }
 
-        Row(
+        Surface(
             Modifier.fillMaxWidth().padding(10.dp),
-            verticalAlignment = Alignment.Bottom
+            shape = RoundedCornerShape(24.dp),
+            color = ChronicleColors.Surface,
+            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .38f)),
+            shadowElevation = 12.dp
         ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                item { RouteSelector(actor, listOf("Player") + characters.map { it.name }, { actor = it }, Icons.Default.Person) }
+                item { RouteSelector(intent, listOf("Talking to", "Action", "Observing", "Thinking"), { intent = it }, Icons.Default.Bolt) }
+                item {
+                    RouteSelector(target, listOf("Scene", "DM") + characters.map { it.name }, {
+                        target = it
+                        if (it == "DM") { mode = "DM"; intent = "Talking to" }
+                    }, Icons.Default.NearMe)
+                }
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
             OutlinedTextField(
                 input,
                 { input = it },
                 Modifier.weight(1f),
-                placeholder = { Text("Continue the story…") },
+                placeholder = { Text(if (mode == "DM") "Talk with your DM…" else "Continue the story…") },
                 maxLines = 5
             )
             Spacer(Modifier.width(8.dp))
@@ -462,11 +488,39 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
                 onClick = {
                     val t = input
                     input = ""
-                    vm.sendMessage(t)
+                    vm.sendMessage(t, mode, actor, intent, target)
                 },
                 enabled = input.isNotBlank() && !gen
             ) {
                 Icon(Icons.Default.Send, "Send")
+            }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("Story", "DM", "Command").forEach { item ->
+                    FilterChip(
+                        selected = mode == item,
+                        onClick = {
+                            mode = item
+                            if (item == "DM") { actor = "Player"; target = "DM"; intent = "Talking to" }
+                            else if (target == "DM") target = "Scene"
+                        },
+                        label = { Text(item) }
+                    )
+                }
+            }
+        }
+        }
+    }
+}
+
+@Composable
+private fun RouteSelector(value: String, options: List<String>, onSelect: (String) -> Unit, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        AssistChip(onClick = { expanded = true }, label = { Text(value) }, leadingIcon = { Icon(icon, null) })
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            options.distinct().forEach { option ->
+                DropdownMenuItem(text = { Text(option) }, onClick = { onSelect(option); expanded = false })
             }
         }
     }
@@ -475,21 +529,46 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
 @Composable
 private fun MessageBubble(m: MessageEntity) {
     val u = m.role == "user"
+    val presentation = ChatRouting.presentation(m.content, m.role)
+    val route = m.content.lineSequence().firstOrNull()?.takeIf { it.startsWith("[") && it.endsWith("]") }
+    val displayContent = ChatRouting.visibleContent(m.content)
+    val accent = when (presentation) {
+        MessagePresentation.NARRATION -> ChronicleColors.Lavender
+        MessagePresentation.PLAYER_ACTION -> ChronicleColors.Cyan
+        MessagePresentation.DIALOGUE -> ChronicleColors.Mint
+        MessagePresentation.DM -> ChronicleColors.Amber
+    }
+    val surfaceColor = when (presentation) {
+        MessagePresentation.NARRATION -> ChronicleColors.Surface.copy(alpha = .9f)
+        MessagePresentation.PLAYER_ACTION -> ChronicleColors.Violet.copy(alpha = .72f)
+        MessagePresentation.DIALOGUE -> ChronicleColors.SurfaceRaised.copy(alpha = .94f)
+        MessagePresentation.DM -> ChronicleColors.DeepNavy.copy(alpha = .94f)
+    }
+    val speaker = when (presentation) {
+        MessagePresentation.NARRATION -> "Chronicle • Narration"
+        MessagePresentation.PLAYER_ACTION -> "You • Action"
+        MessagePresentation.DIALOGUE -> if (u) "You • Dialogue" else "Chronicle • Dialogue"
+        MessagePresentation.DM -> if (u) "You • DM" else "Lorekeeper • Private"
+    }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (u) Arrangement.End else Arrangement.Start
     ) {
-        Column(
-            Modifier.fillMaxWidth(.88f)
-                .background(
-                    if (u) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant,
-                    RoundedCornerShape(16.dp)
-                )
-                .padding(12.dp)
+        Surface(
+            modifier = Modifier.fillMaxWidth(.9f),
+            shape = RoundedCornerShape(22.dp),
+            color = surfaceColor,
+            border = androidx.compose.foundation.BorderStroke(
+                1.dp,
+                accent.copy(alpha = .42f)
+            ),
+            shadowElevation = 10.dp
         ) {
-            Text(if (u) "You" else "Chronicle", fontWeight = FontWeight.Bold)
-            Text(m.content)
+            Column(Modifier.padding(14.dp)) {
+                Text(speaker, fontWeight = FontWeight.Bold, color = accent)
+                route?.let { Text(it.removeSurrounding("[", "]"), color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelSmall) }
+                Text(displayContent, color = ChronicleColors.Ink)
+            }
         }
     }
 }
@@ -498,26 +577,63 @@ private fun MessageBubble(m: MessageEntity) {
 private fun MemoryTab(vm: ChronicleViewModel) {
     val mem by vm.memories.collectAsState()
     var add by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("All") }
+    val categories = listOf("All") + mem.map { it.category }.distinct().sorted()
+    val visible = mem.filter {
+        (category == "All" || it.category == category) &&
+            (query.isBlank() || it.title.contains(query, true) || it.content.contains(query, true))
+    }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(
-            Modifier.fillMaxWidth().padding(12.dp),
+            Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Text("Campaign Memory", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = { add = true }) { Text("Add") }
+            Column {
+                Text("Lore & Memory", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("The campaign's approved source of truth", color = ChronicleColors.MutedInk)
+            }
+            FilledTonalIconButton(onClick = { add = true }) { Icon(Icons.Default.Add, "Add memory") }
         }
-
+        Spacer(Modifier.height(14.dp))
+        OutlinedTextField(
+            query, { query = it }, Modifier.fillMaxWidth(), singleLine = true,
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            placeholder = { Text("Search approved lore…") },
+            shape = RoundedCornerShape(18.dp)
+        )
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(vertical = 10.dp)) {
+            items(categories) { item ->
+                FilterChip(selected = category == item, onClick = { category = item }, label = { Text(item) })
+            }
+        }
+        if (visible.isEmpty()) {
+            ChronicleEmptyState(
+                if (mem.isEmpty()) "No campaign lore established yet." else "Nothing matches this view.",
+                if (mem.isEmpty()) "Approved memories and canon will appear here." else "Try another search or category."
+            )
+        }
         LazyColumn(
-            contentPadding = PaddingValues(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(mem, key = { it.id }) { m ->
-                ElevatedCard(Modifier.fillMaxWidth()) {
+            items(visible, key = { it.id }) { m ->
+                Surface(
+                    Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    color = ChronicleColors.Surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .28f)),
+                    shadowElevation = 8.dp
+                ) {
                     Column(Modifier.padding(12.dp)) {
-                        Text("${m.category} • ${m.title}", fontWeight = FontWeight.Bold)
+                        Text(m.category, color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelMedium)
+                        Text(m.title, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(5.dp))
                         Text(m.content)
-                        TextButton(onClick = { vm.deleteMemory(m) }) { Text("Remove") }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            TextButton(onClick = { vm.deleteMemory(m) }) { Text("Remove") }
+                        }
                     }
                 }
             }
@@ -537,62 +653,46 @@ private fun CharactersTab(vm: ChronicleViewModel) {
     val chars by vm.characters.collectAsState()
     val campaign by vm.selectedCampaign.collectAsState()
     var editing by remember { mutableStateOf<CharacterEntity?>(null) }
+    var opened by remember { mutableStateOf<CharacterEntity?>(null) }
     var adding by remember { mutableStateOf(false) }
 
-    Column(
-        Modifier.fillMaxWidth().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Text("Characters", style = MaterialTheme.typography.titleMedium)
-        Text(
-            "Cast tier controls how aggressively Chronicle tracks each character.",
-            style = MaterialTheme.typography.bodySmall
-        )
-        Button(onClick = { adding = true }) {
-            Icon(Icons.Default.Add, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
-            Text("Add Character")
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Column {
+                Text("Characters", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Open a name to view its canonical book", color = ChronicleColors.MutedInk)
+            }
+            FilledTonalIconButton(onClick = { adding = true }) { Icon(Icons.Default.Add, "Add character") }
         }
-    }
-
-    LazyColumn(
-        contentPadding = PaddingValues(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        items(chars, key = { it.id }) { c ->
-            ElevatedCard(
-                Modifier.fillMaxWidth().clickable { editing = c }
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+        Spacer(Modifier.height(16.dp))
+        if (chars.isEmpty()) {
+            ChronicleEmptyState("No characters established yet.", "Approved character proposals will appear here.")
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(chars, key = { it.id }) { c ->
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().clickable { opened = c },
+                        shape = RoundedCornerShape(20.dp),
+                        color = ChronicleColors.Surface,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .3f)),
+                        shadowElevation = 8.dp
                     ) {
-                        Text(
-                            c.name,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        AssistChip(onClick = {}, label = { Text(c.castTier) })
-                    }
-
-                    if (c.species.isNotBlank() || c.age.isNotBlank()) {
-                        Text(
-                            listOf(c.species, c.age)
-                                .filter { it.isNotBlank() }
-                                .joinToString(" • ")
-                        )
-                    }
-                    if (c.relationship.isNotBlank()) {
-                        Text("Relationship: ${c.relationship}")
-                    }
-                    if (c.personality.isNotBlank()) {
-                        Text(c.personality, maxLines = 2)
+                        Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(c.name, Modifier.weight(1f), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                            Icon(Icons.Default.ChevronRight, "Open ${c.name}", tint = ChronicleColors.Cyan)
+                        }
                     }
                 }
             }
         }
+    }
+
+    opened?.let { character ->
+        CharacterBookDialog(
+            character = character,
+            onDismiss = { opened = null },
+            onEdit = { opened = null; editing = character }
+        )
     }
 
     if (adding) {
@@ -624,6 +724,70 @@ private fun CharactersTab(vm: ChronicleViewModel) {
                 editing = null
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CharacterBookDialog(character: CharacterEntity, onDismiss: () -> Unit, onEdit: () -> Unit) {
+    val tabs = listOf("Overview", "Lore & Backstory", "Skills", "Relationships", "Status Effects", "Equipment", "Notes")
+    var selectedTab by remember(character.id) { mutableIntStateOf(0) }
+    BasicAlertDialog(onDismissRequest = onDismiss) {
+        Surface(
+            Modifier.fillMaxWidth(.98f).fillMaxHeight(.94f),
+            shape = RoundedCornerShape(28.dp),
+            color = ChronicleColors.DeepNavy,
+            border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .55f)),
+            shadowElevation = 24.dp
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.ArrowBack, "Characters") }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(character.name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                        Text("Approved Canon", color = ChronicleColors.Cyan, style = MaterialTheme.typography.labelMedium)
+                    }
+                    IconButton(onClick = onEdit) { Icon(Icons.Default.Edit, "Edit character") }
+                }
+                ScrollableTabRow(selectedTabIndex = selectedTab, edgePadding = 8.dp, containerColor = ChronicleColors.Surface) {
+                    tabs.forEachIndexed { index, title ->
+                        Tab(selected = selectedTab == index, onClick = { selectedTab = index }, text = { Text(title) })
+                    }
+                }
+                Surface(
+                    Modifier.fillMaxSize().padding(14.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = ChronicleColors.Surface.copy(alpha = .78f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .25f))
+                ) {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        when (selectedTab) {
+                            0 -> {
+                                BookField("Identity", listOf(character.species, character.age, character.pronouns).filter { it.isNotBlank() }.joinToString(" • "))
+                                BookField("Appearance", character.appearance)
+                                BookField("Personality", character.personality)
+                                BookField("Goals", character.goals)
+                            }
+                            1 -> { BookField("Lore", ""); BookField("Backstory", character.backstory); BookField("Secrets", character.secrets) }
+                            2 -> BookField("Skills & Abilities", character.abilities)
+                            3 -> { BookField("Relationships", character.relationship); BookField("Affiliations", character.affiliations) }
+                            4 -> { BookField("Status", character.status); BookField("Injuries & Conditions", character.injuries); BookField("Fears & Vulnerabilities", character.fears) }
+                            5 -> BookField("Equipment", character.equipment)
+                            else -> BookField("Notes", character.notes)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BookField(title: String, value: String) {
+    Column {
+        Text(title, color = ChronicleColors.Lavender, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(5.dp))
+        Text(value.ifBlank { "Not established yet." }, color = if (value.isBlank()) ChronicleColors.MutedInk else MaterialTheme.colorScheme.onSurface)
     }
 }
 

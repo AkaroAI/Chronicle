@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.json.JSONObject
 
 class ProviderTransportTest {
     @Test
@@ -52,5 +53,21 @@ class ProviderTransportTest {
             apiKey = "secret"
         )
         assertEquals("https://provider.example/v1", validateProviderTransport(settings))
+    }
+
+    @Test
+    fun `native engine payload retains DM system and user messages`() {
+        val payload = buildProviderPayload(
+            ProviderRequest(
+                systemPrompt = "Non-canonical DM conversation",
+                memoryContext = "",
+                messages = listOf(ProviderMessage("user", "[DM Conversation]\nHello")),
+                nativeEnginePayload = JSONObject().put("campaign", JSONObject().put("campaign_id", "1"))
+            ),
+            "qwen3:14b"
+        )
+        assertEquals("Non-canonical DM conversation", payload.getString("system_prompt"))
+        assertEquals("[DM Conversation]\nHello", payload.getJSONArray("messages").getJSONObject(1).getString("content"))
+        assertEquals("1", payload.getJSONObject("campaign").getString("campaign_id"))
     }
 }

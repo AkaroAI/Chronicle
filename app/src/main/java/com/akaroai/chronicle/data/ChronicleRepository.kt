@@ -2,8 +2,10 @@ package com.akaroai.chronicle.data
 
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.ProposalParser
+import com.akaroai.chronicle.ui.ChatRouting
 import kotlinx.coroutines.flow.Flow
 import org.json.JSONObject
+import org.json.JSONArray
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -26,6 +28,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             .filter { it.status == "Pending" }
             .map { it.id }
             .toSet()
+
+    suspend fun proposalsSnapshot(campaignId: Long): List<ChangeProposalEntity> =
+        dao.proposalsSnapshot(campaignId)
 
     suspend fun recentMessages(campaignId: Long, limit: Int): List<MessageEntity> =
         dao.messagesSnapshot(campaignId).takeLast(limit.coerceAtLeast(1))
@@ -274,6 +279,142 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
     }
 
+    suspend fun buildStructuredEnginePayload(campaign: CampaignEntity): JSONObject {
+        val characters = dao.charactersSnapshot(campaign.id)
+        val memories = dao.memoriesSnapshot(campaign.id)
+        val locations = dao.locationsSnapshot(campaign.id)
+        val factions = dao.factionsSnapshot(campaign.id)
+        val quests = dao.questsSnapshot(campaign.id)
+        val timeline = dao.timelineSnapshot(campaign.id)
+        val recent = dao.messagesSnapshot(campaign.id)
+            .filterNot { it.content.startsWith("[DM Conversation]") }
+            .takeLast(5)
+
+        fun fact(kind: String, text: String, id: Long) = JSONObject()
+            .put("id", id.toString())
+            .put("kind", kind)
+            .put("text", text)
+            .put("confidence", 1.0)
+
+        val canon = JSONArray()
+        locations.forEach { location ->
+            canon.put(
+                fact(
+                    "location",
+                    "${location.name} | region=${location.region} | parent=${location.parentLocation} | " +
+                        "discovery=${location.discoveryState} | status=${location.status} | " +
+                        "${location.description} | notes=${location.notes}",
+                    location.id
+                )
+            )
+        }
+        factions.forEach { faction ->
+            canon.put(
+                fact(
+                    "faction",
+                    "${faction.name} | alignment=${faction.alignment} | relationship=${faction.relationshipToParty} | " +
+                        "status=${faction.status} | goals=${faction.goals} | ${faction.description}",
+                    faction.id
+                )
+            )
+        }
+        quests.forEach { quest ->
+            canon.put(
+                fact(
+                    "quest",
+                    "${quest.title} | status=${quest.status} | objective=${quest.objective} | " +
+                        "location=${quest.relatedLocation} | faction=${quest.relatedFaction} | ${quest.summary}",
+                    quest.id
+                )
+            )
+        }
+        timeline.takeLast(20).forEach { event ->
+            canon.put(
+                fact(
+                    "timeline",
+                    "${event.title} | type=${event.eventType} | location=${event.location} | " +
+                        "characters=${event.involvedCharacters} | ${event.summary}",
+                    event.id
+                )
+            )
+        }
+
+        val characterArray = JSONArray()
+        characters.forEach { character ->
+            val isPlayer = campaign.playerCharacterId == character.id
+            characterArray.put(
+                JSONObject()
+                    .put("id", character.id.toString())
+                    .put("name", character.name)
+                    .put(
+                        "description",
+                        buildString {
+                            if (isPlayer) append("PLAYER-CONTROLLED CHARACTER. ")
+                            append("species=${character.species}; age=${character.age}; pronouns=${character.pronouns}; ")
+                            append("appearance=${character.appearance}; personality=${character.personality}; ")
+                            append("backstory=${character.backstory}; abilities=${character.abilities}; ")
+                            append("equipment=${character.equipment}; affiliations=${character.affiliations}; ")
+                            append("fears=${character.fears}; injuries=${character.injuries}; ")
+                            append("location=${character.currentLocation}; status=${character.status}; notes=${character.notes}")
+                        }
+                    )
+                    .put("goals", JSONArray().apply { if (character.goals.isNotBlank()) put(character.goals) })
+                    .put(
+                        "known_facts",
+                        JSONArray().apply {
+                            if (character.relationship.isNotBlank()) put("relationships: ${character.relationship}")
+                        }
+                    )
+                    .put("secrets", JSONArray().apply { if (character.secrets.isNotBlank()) put(character.secrets) })
+                    .put(
+                        "relationships",
+                        JSONObject().apply {
+                            if (character.relationship.isNotBlank()) put("summary", character.relationship)
+                        }
+                    )
+            )
+        }
+
+        val memoryArray = JSONArray()
+        memories.takeLast(30).forEach { memory ->
+            memoryArray.put(
+                JSONObject()
+                    .put("id", memory.id.toString())
+                    .put("kind", memory.category)
+                    .put("text", "${memory.title}: ${memory.content}")
+                    .put("confidence", 1.0)
+            )
+        }
+
+        val messages = JSONArray()
+        recent.forEach { message ->
+            messages.put(JSONObject().put("role", message.role).put("content", message.content))
+        }
+
+        return JSONObject()
+            .put("messages", messages)
+            .put("temperature", 0.75)
+            .put(
+                "campaign",
+                JSONObject()
+                    .put("campaign_id", campaign.id.toString())
+                    .put("campaign_name", campaign.name)
+                    .put("current_scene", campaign.currentObjective)
+                    .put("active_location", campaign.currentLocation)
+                    .put("canon", canon)
+                    .put("memories", memoryArray)
+                    .put("characters", characterArray)
+                    .put(
+                        "unresolved_threads",
+                        JSONArray().apply {
+                            quests.filter { it.status in setOf("Active", "Paused") }.forEach {
+                                put("${it.title}: ${it.objective}")
+                            }
+                        }
+                    )
+            )
+    }
+
     suspend fun proposeExplicitCharacterMovementCommand(campaignId: Long, text: String): Int {
         val clean = text.trim()
         if (clean.isBlank()) return 0
@@ -292,6 +433,36 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             .filter { it.isNotBlank() }
 
         var created = 0
+
+        // "Yuki leaves Asira at Moonfall Village ..." establishes Asira's position even
+        // though she does not move. Persist that independent map anchor when it is missing.
+        Regex("""(?i)\b[A-Za-z][A-Za-z'’-]*\s+leaves?\s+([A-Za-z][A-Za-z'’-]*)\s+(?:behind\s+)?at\s+([A-Za-z][A-Za-z'’ -]{1,80})\s+(?:and|to|while|before|after|\.|,|$)""")
+            .findAll(text)
+            .forEach { match ->
+                val name = match.groupValues[1].trim()
+                val destination = match.groupValues[2].trim().trim('.', ',')
+                val character = characters.firstOrNull { it.name.equals(name, true) } ?: return@forEach
+                val currentRecorded = character.currentLocation.ifBlank { latestRecordedCharacterLocation(character.notes) }
+                if (destination.isNotBlank() && normalizeLocationIdentity(currentRecorded) != normalizeLocationIdentity(destination)) {
+                    addProposal(
+                        ChangeProposalEntity(
+                            campaignId = campaignId,
+                            summary = "${character.name} remains at $destination",
+                            targetType = "character_update",
+                            targetId = character.id,
+                            proposedChanges = JSONObject().put("fields", JSONObject()
+                                .put("currentLocation", destination)
+                                .put("notes", "Currently at $destination.")).toString(),
+                            reason = "The player explicitly established where ${character.name} stays.",
+                            groupType = "Characters",
+                            groupLabel = character.name,
+                            changeMode = "Append",
+                            evidenceType = "Player Confirmed"
+                        )
+                    )
+                    created++
+                }
+            }
 
         for (clause in clauses) {
             if (!movementWords.containsMatchIn(clause)) continue
@@ -360,7 +531,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             }
 
             val verbMatch = movementWords.find(clause)
-            val subjectWindow = if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
+            val subjectWindow = ChatRouting.explicitSoloDepartureSubject(clause)
+                ?: if (verbMatch != null) clause.substring(0, verbMatch.range.first) else clause
 
             val subjects = characters
                 .filter { c ->
@@ -523,7 +695,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
 
         val newPatterns = listOf(
             Regex("""(?i)\b(?:add|create|start|begin|track)\s+(?:a\s+|new\s+)?quest(?:\s+(?:called|named|titled))?\s*[:\-]?\s*(.+)"""),
-            Regex("""(?i)\b(?:our\s+)?(?:new\s+|active\s+)?quest\s+is\s+(?:to\s+)?(.+)""")
+            Regex("""(?i)\b(?:our\s+)?(?:new\s+|active\s+)?quest\s+is\s+(?:to\s+)?(.+)"""),
+            Regex("""(?i)^\s*quest\s*[,;:\-]\s*(?:is\s+|to\s+)?(.+)""")
         )
         val match = newPatterns.firstNotNullOfOrNull { it.find(clean) }
         if (match != null) {
@@ -573,6 +746,41 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         }
 
         return false
+    }
+
+    suspend fun proposeExplicitCampaignYear(campaignId: Long, text: String): Boolean {
+        val match = Regex(
+            """(?i)\b(?:world|campaign|story|setting)\b.{0,35}\b(?:year|set in)\s+(?:the\s+year\s+)?([A-Za-z0-9-]{1,20})\b"""
+        ).find(text) ?: return false
+        val year = match.groupValues[1].trim()
+        if (year.isBlank()) return false
+
+        val alreadyStored = dao.memoriesSnapshot(campaignId).any {
+            it.category.equals("Canon", true) &&
+                it.title.equals("Campaign Year", true) &&
+                it.content.contains(year, true)
+        }
+        if (alreadyStored) return false
+
+        addProposal(
+            ChangeProposalEntity(
+                campaignId = campaignId,
+                summary = "Set campaign year to $year",
+                targetType = "memory_new",
+                proposedChanges = JSONObject()
+                    .put("category", "Canon")
+                    .put("title", "Campaign Year")
+                    .put("content", "The campaign is set in the year $year.")
+                    .toString(),
+                reason = "Explicit campaign calendar statement: ${text.trim()}",
+                priority = "Normal",
+                groupType = "Lore",
+                groupLabel = "Campaign Calendar",
+                changeMode = "Replace",
+                evidenceType = "Player Confirmed"
+            )
+        )
+        return true
     }
 
     suspend fun proposeQuestStateChange(
@@ -627,13 +835,15 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         val name = changes.optString("name").trim()
         if (name.isBlank()) error("Location needs a name.")
         val old = dao.locationsSnapshot(campaignId).firstOrNull { it.name.equals(name, true) }
+        fun value(key: String, current: String): String =
+            changes.optString(key).trim().takeIf { it.isNotBlank() } ?: current
         val next = (old ?: LocationEntity(campaignId = campaignId, name = name)).copy(
-            region = changes.optString("region", old?.region ?: ""),
-            parentLocation = changes.optString("parentLocation", old?.parentLocation ?: ""),
-            description = changes.optString("description", old?.description ?: ""),
+            region = value("region", old?.region ?: ""),
+            parentLocation = value("parentLocation", old?.parentLocation ?: ""),
+            description = value("description", old?.description ?: ""),
             discoveryState = changes.optString("discoveryState", old?.discoveryState ?: "Discovered"),
             status = changes.optString("status", old?.status ?: "Active"),
-            notes = changes.optString("notes", old?.notes ?: ""),
+            notes = value("notes", old?.notes ?: ""),
             updatedAt = System.currentTimeMillis()
         )
         if (old == null) dao.insertLocation(next) else dao.updateLocation(next)
@@ -673,6 +883,10 @@ class ChronicleRepository(private val dao: ChronicleDao) {
     }
 
     suspend fun addProposal(proposal: ChangeProposalEntity) {
+        // Invalid dependency edges must never reach Review as approvable items.
+        if (proposal.targetType in setOf("character_update", "cast_tier_update") && proposal.targetId == null) {
+            return
+        }
         val worldTypes = setOf("location_upsert", "faction_upsert", "quest_upsert", "timeline_event_new")
         val oldPending = if (proposal.targetType in worldTypes) {
             val identity = proposalIdentity(proposal)
@@ -756,7 +970,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             oldPending.forEach { old ->
                 dao.updateProposal(old.copy(status = "Superseded", supersededById = newId))
             }
-        } else if (newFields.isNotEmpty()) {
+        } else if (proposal.targetType != "character_new" && newFields.isNotEmpty()) {
             oldPending.forEach { old ->
                 val overlap = ProposalParser.changedFieldNames(old.proposedChanges).intersect(newFields)
                 if (overlap.isNotEmpty()) {
@@ -953,6 +1167,16 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 val current = dao.campaignById(proposal.campaignId)
                     ?: error("Campaign no longer exists.")
                 val fields = changes.optJSONObject("fields") ?: changes
+                val supported = setOf("name", "description", "setting", "genreTone", "currentLocation", "currentObjective")
+                val supplied = buildSet {
+                    val keys = fields.keys()
+                    while (keys.hasNext()) add(keys.next())
+                }.filterNot { it.startsWith("__") }
+                val unsupported = supplied - supported
+                if (unsupported.isNotEmpty()) {
+                    error("Unsupported campaign field${if (unsupported.size == 1) "" else "s"}: ${unsupported.joinToString()}")
+                }
+                if (supplied.isEmpty()) error("Campaign proposal contains no supported changes.")
                 updateCampaign(
                     current.copy(
                         name = fields.valueOr("name", current.name),

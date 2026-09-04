@@ -1,7 +1,9 @@
 package com.akaroai.chronicle.ui
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -58,7 +60,13 @@ fun TimelineTab(vm: ChronicleViewModel) {
                                 null
                             )
                         }
-                        ElevatedCard(Modifier.weight(1f)) {
+                        Surface(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(22.dp),
+                            color = ChronicleColors.Surface.copy(alpha = .88f),
+                            border = BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .3f)),
+                            shadowElevation = 10.dp
+                        ) {
                             Column(Modifier.padding(14.dp)) {
                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                     Text(e.title, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
