@@ -19,8 +19,8 @@ data class ImportCoverage(
 )
 
 object LosslessImportPipeline {
-    const val DEFAULT_TARGET_CHARS = 6_000
-    const val DEFAULT_OVERLAP_CHARS = 500
+    const val DEFAULT_TARGET_CHARS = 3_500
+    const val DEFAULT_OVERLAP_CHARS = 300
 
     fun sha256(text: String): String = MessageDigest.getInstance("SHA-256")
         .digest(text.toByteArray(Charsets.UTF_8))

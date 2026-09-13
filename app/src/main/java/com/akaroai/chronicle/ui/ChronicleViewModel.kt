@@ -402,6 +402,12 @@ class ChronicleViewModel(
                     Do not promote a character merely because their name appears often in one scene.
 
                     Extract durable canon, not every sentence. Preserve contradictions by marking Ambiguous.
+                    This is structured extraction, not creative writing. Be extremely compact:
+                    - Never rewrite, embellish, continue, summarize dramatically, or imitate the campaign prose.
+                    - Use at most one concise sentence per scalar field.
+                    - Keep ordinary scalar fields under 240 characters and notes under 400 characters.
+                    - Use empty strings and empty arrays for facts not established in this segment.
+                    - Preserve every distinct durable fact, but express it once in the narrowest matching field.
                     For every named character, determine their LAST explicitly established current location when possible.
                     If confidently established, append the exact sentence "Currently at LOCATION_NAME." to that character's notes.
                     If current location is unknown or only historical, do not guess.
