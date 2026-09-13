@@ -12,6 +12,7 @@ import com.akaroai.chronicle.model.*
     entities = [
         CampaignEntity::class,
         MessageEntity::class,
+        ImportSourceChunkEntity::class,
         MemoryEntity::class,
         CharacterEntity::class,
         ChangeProposalEntity::class,
@@ -20,7 +21,7 @@ import com.akaroai.chronicle.model.*
         QuestEntity::class,
         TimelineEventEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class ChronicleDatabase : RoomDatabase() {
@@ -116,6 +117,14 @@ abstract class ChronicleDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS import_source_chunks (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, campaignId INTEGER NOT NULL, ordinal INTEGER NOT NULL, content TEXT NOT NULL, sourceSha256 TEXT NOT NULL, FOREIGN KEY(campaignId) REFERENCES campaigns(id) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_import_source_chunks_campaignId ON import_source_chunks(campaignId)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_import_source_chunks_campaignId_ordinal ON import_source_chunks(campaignId, ordinal)")
+            }
+        }
+
         fun get(context: Context): ChronicleDatabase =
             INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -128,7 +137,8 @@ abstract class ChronicleDatabase : RoomDatabase() {
                         MIGRATION_2_3,
                         MIGRATION_3_4,
                         MIGRATION_4_5,
-                        MIGRATION_5_6
+                        MIGRATION_5_6,
+                        MIGRATION_6_7
                     )
                     .build()
                     .also { INSTANCE = it }

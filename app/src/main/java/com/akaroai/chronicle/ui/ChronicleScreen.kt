@@ -44,6 +44,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
     val proposals by vm.pendingProposals.collectAsState()
     val externalDraft by vm.externalImportDraft.collectAsState()
     val importAnalyzing by vm.isImportAnalyzing.collectAsState()
+    val importProgress by vm.importProgress.collectAsState()
     val context = LocalContext.current
 
     var tab by remember { mutableStateOf(ChronicleTab.CHAT) }
@@ -107,23 +108,22 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
                     Box {
                         Surface(
                             modifier = Modifier
-                                .widthIn(min = 156.dp, max = 220.dp)
+                                .widthIn(min = 190.dp, max = 270.dp)
                                 .clickable { campaignMenu = true },
                             shape = RoundedCornerShape(18.dp),
                             color = ChronicleColors.Surface,
                             border = androidx.compose.foundation.BorderStroke(1.dp, ChronicleColors.Lavender.copy(alpha = .35f))
                         ) {
-                            Row(Modifier.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column {
-                                    Text(
-                                        selected?.name ?: "Choose a campaign",
-                                        fontWeight = FontWeight.Bold,
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                        color = ChronicleColors.Ink
-                                    )
-                                    Text("Chronicle", style = MaterialTheme.typography.labelSmall, color = ChronicleColors.MutedInk)
-                                }
+                            Row(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    selected?.name ?: "Choose a campaign",
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                    color = ChronicleColors.Ink
+                                )
                                 Spacer(Modifier.width(8.dp))
                                 Icon(Icons.Default.ExpandMore, "Switch campaign")
                             }
@@ -361,7 +361,7 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
         )
     }
 
-    externalDraft?.let { draft ->
+    if (!importAnalyzing) externalDraft?.let { draft ->
         ExternalImportReviewDialog(
             draft = draft,
             onDismiss = vm::cancelExternalImport,
@@ -510,6 +510,38 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
             }
         }
         }
+    }
+
+    if (importAnalyzing) {
+        val progress = importProgress
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(progress?.stage ?: "Preparing import") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val total = progress?.totalSegments ?: 0
+                    if (total > 0) {
+                        LinearProgressIndicator(
+                            progress = { progress?.fraction ?: 0f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("${progress?.completedSegments ?: 0} of $total segments analyzed")
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Text(
+                        progress?.detail ?: "Chronicle is preserving and preparing the complete document.",
+                        color = ChronicleColors.MutedInk
+                    )
+                    Text(
+                        "You can reselect the same file after an interruption; completed segments are reused.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ChronicleColors.Cyan
+                    )
+                }
+            },
+            confirmButton = {}
+        )
     }
 }
 

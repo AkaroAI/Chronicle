@@ -33,6 +33,12 @@ interface ChronicleDao {
     @Insert
     suspend fun insertMessage(message: MessageEntity): Long
 
+    @Query("SELECT * FROM import_source_chunks WHERE campaignId = :campaignId ORDER BY ordinal ASC")
+    suspend fun importSourceChunks(campaignId: Long): List<ImportSourceChunkEntity>
+
+    @Insert
+    suspend fun insertImportSourceChunk(chunk: ImportSourceChunkEntity): Long
+
     @Query("SELECT * FROM memories WHERE campaignId = :campaignId ORDER BY pinned DESC, createdAt DESC")
     fun memories(campaignId: Long): Flow<List<MemoryEntity>>
 

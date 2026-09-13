@@ -9,6 +9,7 @@ import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.data.ExternalCampaignImport
 import com.akaroai.chronicle.data.ExternalImportDraft
 import com.akaroai.chronicle.data.ImportedLocationDraft
+import com.akaroai.chronicle.data.LosslessImportPipeline
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +19,18 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import org.json.JSONObject
+import org.json.JSONArray
+import java.io.File
+
+data class ImportProgress(
+    val stage: String,
+    val completedSegments: Int = 0,
+    val totalSegments: Int = 0,
+    val detail: String = ""
+) {
+    val fraction: Float get() = if (totalSegments == 0) 0f
+        else completedSegments.toFloat() / totalSegments.toFloat()
+}
 
 class ChronicleViewModel(
     private val repository: ChronicleRepository,
@@ -100,6 +113,9 @@ class ChronicleViewModel(
 
     private val _isImportAnalyzing = MutableStateFlow(false)
     val isImportAnalyzing = _isImportAnalyzing.asStateFlow()
+
+    private val _importProgress = MutableStateFlow<ImportProgress?>(null)
+    val importProgress = _importProgress.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -203,6 +219,7 @@ class ChronicleViewModel(
         val source = draft.sourceText
 
         val updatedCharacters = draft.characters.map { character ->
+            if (character.currentLocation.isNotBlank()) return@map character
             val explicitExisting = Regex("""(?i)Currently at\s+([^.\n]+)\.""")
                 .findAll(character.notes)
                 .lastOrNull()
@@ -246,6 +263,7 @@ class ChronicleViewModel(
                     character
                 } else {
                     character.copy(
+                        currentLocation = latest,
                         notes = listOf(character.notes.trim(), "Currently at $latest.")
                             .filter { it.isNotBlank() }
                             .joinToString("\n"),
@@ -356,7 +374,13 @@ class ChronicleViewModel(
                         ?: error("Could not read that campaign file.")
                 }
                 if (text.isBlank()) error("That campaign file is empty.")
-                if (text.length > 1_500_000) error("This file is too large for one-pass import. Split it into smaller parts first.")
+                if (text.length > 20_000_000) error("This document exceeds Chronicle's current 20-million-character safety limit.")
+
+                _importProgress.value = ImportProgress("Preparing complete document", detail = "Verifying the untouched source…")
+                val sourceHash = LosslessImportPipeline.sha256(text)
+                val segments = LosslessImportPipeline.segment(text)
+                val coverage = LosslessImportPipeline.verifyCoverage(text, segments)
+                check(coverage.complete) { "Source coverage verification failed before analysis." }
 
                 val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
                 val system = """
@@ -439,19 +463,70 @@ class ChronicleViewModel(
                     }
                 """.trimIndent()
 
-                val raw = provider.generate(
-                    ProviderRequest(
-                        systemPrompt = system,
-                        memoryContext = "",
-                        messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text")),
-                        temperature = 0.2
+                val checkpoint = loadImportCheckpoint(context, sourceHash).toMutableMap()
+                val rawSegments = MutableList(segments.size) { "" }
+                segments.forEach { segment ->
+                    val cached = checkpoint[segment.index]
+                    val raw = if (!cached.isNullOrBlank()) cached else {
+                        _importProgress.value = ImportProgress(
+                            stage = "Analyzing safely",
+                            completedSegments = segment.index,
+                            totalSegments = segments.size,
+                            detail = "Segment ${segment.index + 1} of ${segments.size} • complete source preserved"
+                        )
+                        provider.generate(
+                            ProviderRequest(
+                                systemPrompt = system + """
+
+                                    SEGMENT RULES
+                                    - This is one lossless segment of a larger document.
+                                    - Extract only facts supported inside this segment and its overlap context.
+                                    - Do not assume this segment is the beginning or ending of the campaign.
+                                    - Repeated overlap text must not cause invented duplicate records.
+                                """.trimIndent(),
+                                memoryContext = "",
+                                messages = listOf(
+                                    ProviderMessage(
+                                        "user",
+                                        "SOURCE RANGE ${segment.primaryStart}-${segment.primaryEnd} " +
+                                            "OF ${text.length}; CONTEXT RANGE ${segment.contextStart}-${segment.contextEnd}:\n" +
+                                            segment.content
+                                    )
+                                ),
+                                temperature = 0.15
+                            )
+                        ).also {
+                            checkpoint[segment.index] = it
+                            saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
+                        }
+                    }
+                    rawSegments[segment.index] = raw
+                    _importProgress.value = ImportProgress(
+                        stage = "Analyzing safely",
+                        completedSegments = segment.index + 1,
+                        totalSegments = segments.size,
+                        detail = "Segment ${segment.index + 1} of ${segments.size} complete"
                     )
+                }
+
+                _importProgress.value = ImportProgress(
+                    "Combining extracted records", segments.size, segments.size,
+                    "Merging characters, locations, quests, timeline, and memories…"
+                )
+                val merged = ExternalCampaignImport.mergeAnalyses(rawSegments, text)
+                _importProgress.value = ImportProgress(
+                    "Checking continuity", segments.size, segments.size,
+                    "Coverage ${coverage.coveredCharacters}/${coverage.sourceLength} characters • no gaps"
                 )
                 val parsedDraft = seedMissingLocationsFromSource(
-                    ExternalCampaignImport.parseAnalysis(raw, text),
+                    merged,
                     text
                 )
                 _externalImportDraft.value = seedImportedCharacterPresence(parsedDraft)
+                _importProgress.value = ImportProgress(
+                    "Import Review ready", segments.size, segments.size,
+                    "Every source character was covered; the original document remains attached."
+                )
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "External campaign analysis failed."
             } finally {
@@ -460,8 +535,48 @@ class ChronicleViewModel(
         }
     }
 
+    private fun checkpointFile(context: Context, hash: String): File =
+        File(context.filesDir, "import-checkpoints").resolve("$hash.json")
+
+    private fun loadImportCheckpoint(context: Context, hash: String): Map<Int, String> = runCatching {
+        val file = checkpointFile(context, hash)
+        if (!file.exists()) return emptyMap()
+        val root = JSONObject(file.readText(Charsets.UTF_8))
+        val analyses = root.optJSONArray("analyses") ?: return emptyMap()
+        buildMap {
+            for (index in 0 until analyses.length()) {
+                analyses.optString(index).takeIf(String::isNotBlank)?.let { put(index, it) }
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun saveImportCheckpoint(
+        context: Context,
+        hash: String,
+        sourceLength: Int,
+        segmentCount: Int,
+        analyses: Map<Int, String>
+    ) {
+        val file = checkpointFile(context, hash)
+        file.parentFile?.mkdirs()
+        val array = JSONArray()
+        repeat(segmentCount) { array.put(analyses[it].orEmpty()) }
+        val root = JSONObject()
+            .put("sourceSha256", hash)
+            .put("sourceLength", sourceLength)
+            .put("segmentCount", segmentCount)
+            .put("analyses", array)
+        val temporary = File(file.parentFile, "${file.name}.writing")
+        temporary.writeText(root.toString(), Charsets.UTF_8)
+        if (!temporary.renameTo(file)) {
+            file.writeText(root.toString(), Charsets.UTF_8)
+            temporary.delete()
+        }
+    }
+
     fun cancelExternalImport() {
         _externalImportDraft.value = null
+        _importProgress.value = null
     }
 
     fun commitExternalImport(draft: ExternalImportDraft) {
@@ -470,6 +585,7 @@ class ChronicleViewModel(
                 val id = repository.commitExternalImport(draft)
                 selectedId.value = id
                 _externalImportDraft.value = null
+                _importProgress.value = null
                 _notice.value = "External campaign imported. Review its characters and memories before continuing."
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not create imported campaign."

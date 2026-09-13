@@ -95,7 +95,8 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                 locations = dao.locationsSnapshot(campaignId),
                 factions = dao.factionsSnapshot(campaignId),
                 quests = dao.questsSnapshot(campaignId),
-                timelineEvents = dao.timelineSnapshot(campaignId)
+                timelineEvents = dao.timelineSnapshot(campaignId),
+                importSourceChunks = dao.importSourceChunks(campaignId)
             ),
             output
         )
@@ -139,6 +140,9 @@ class ChronicleRepository(private val dao: ChronicleDao) {
         backup.factions.forEach { dao.insertFaction(it.copy(id = 0, campaignId = importedId)) }
         backup.quests.forEach { dao.insertQuest(it.copy(id = 0, campaignId = importedId)) }
         backup.timelineEvents.forEach { dao.insertTimelineEvent(it.copy(id = 0, campaignId = importedId)) }
+        backup.importSourceChunks.forEach {
+            dao.insertImportSourceChunk(it.copy(id = 0, campaignId = importedId))
+        }
 
         val proposalIdMap = mutableMapOf<Long, Long>()
         backup.proposals.forEach { old ->
@@ -1243,7 +1247,7 @@ class ChronicleRepository(private val dao: ChronicleDao) {
                     secrets = c.secrets,
                     injuries = c.injuries,
                     notes = c.notes,
-                    currentLocation = latestRecordedCharacterLocation(c.notes),
+                    currentLocation = c.currentLocation.ifBlank { latestRecordedCharacterLocation(c.notes) },
                     status = c.status,
                     castTier = c.castTier,
                     integrityMode = if (c.castTier == "Main") "Strict" else "Balanced"
@@ -1336,17 +1340,20 @@ class ChronicleRepository(private val dao: ChronicleDao) {
             )
         }
 
-        if (draft.messages.isEmpty() && draft.sourceText.isNotBlank()) {
-            dao.insertMemory(
-                MemoryEntity(
-                    campaignId = campaignId,
-                    category = "Imported Source",
-                    title = "Original imported campaign material",
-                    content = draft.sourceText,
-                    pinned = false
+        if (draft.sourceText.isNotEmpty()) {
+            val sourceHash = LosslessImportPipeline.sha256(draft.sourceText)
+            LosslessImportPipeline.segment(draft.sourceText).forEach { segment ->
+                dao.insertImportSourceChunk(
+                    ImportSourceChunkEntity(
+                        campaignId = campaignId,
+                        ordinal = segment.index,
+                        content = draft.sourceText.substring(segment.primaryStart, segment.primaryEnd),
+                        sourceSha256 = sourceHash
+                    )
                 )
-            )
+            }
         }
+
         dao.touchCampaign(campaignId)
         return campaignId
     }
