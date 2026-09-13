@@ -5,6 +5,20 @@ import org.junit.Test
 
 class LosslessImportPipelineTest {
     @Test
+    fun adaptiveSubdivisionPreservesTheExactParentRange() {
+        val source = (1..300).joinToString("\n\n") { "Turn $it — PLAYER\nA durable campaign fact is established here." }
+        val parent = LosslessImportPipeline.segment(source).first()
+        val children = LosslessImportPipeline.subdivide(source, parent)
+        assertEquals(parent.primaryStart, children.first().primaryStart)
+        assertEquals(parent.primaryEnd, children.last().primaryEnd)
+        assertEquals(children.first().primaryEnd, children.last().primaryStart)
+        assertEquals(
+            source.substring(parent.primaryStart, parent.primaryEnd),
+            children.joinToString("") { source.substring(it.primaryStart, it.primaryEnd) }
+        )
+    }
+
+    @Test
     fun rejectsConversationalTextAndAcceptsWrappedJson() {
         assertFalse(ExternalCampaignImport.isValidAnalysis("Welcome to the campaign!"))
         assertTrue(ExternalCampaignImport.isValidAnalysis("Here is the result:\n{\"campaignName\":\"Asira\"}\nDone"))

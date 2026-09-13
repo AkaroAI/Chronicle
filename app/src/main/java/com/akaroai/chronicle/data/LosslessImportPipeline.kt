@@ -21,6 +21,33 @@ data class ImportCoverage(
 object LosslessImportPipeline {
     const val DEFAULT_TARGET_CHARS = 3_500
     const val DEFAULT_OVERLAP_CHARS = 300
+    const val MIN_ADAPTIVE_CHARS = 900
+
+    fun key(segment: ImportSegment): String = "${segment.primaryStart}:${segment.primaryEnd}"
+
+    fun subdivide(
+        source: String,
+        parent: ImportSegment,
+        overlapChars: Int = DEFAULT_OVERLAP_CHARS
+    ): List<ImportSegment> {
+        val length = parent.primaryEnd - parent.primaryStart
+        require(length >= MIN_ADAPTIVE_CHARS * 2) { "Import segment is already at minimum size." }
+        val desired = parent.primaryStart + length / 2
+        val boundary = safeBoundary(source, parent.primaryStart, desired)
+            .coerceIn(parent.primaryStart + MIN_ADAPTIVE_CHARS, parent.primaryEnd - MIN_ADAPTIVE_CHARS)
+        return listOf(parent.primaryStart to boundary, boundary to parent.primaryEnd).mapIndexed { index, range ->
+            val contextStart = (range.first - overlapChars).coerceAtLeast(0)
+            val contextEnd = (range.second + overlapChars).coerceAtMost(source.length)
+            ImportSegment(
+                index = parent.index * 2 + index,
+                primaryStart = range.first,
+                primaryEnd = range.second,
+                contextStart = contextStart,
+                contextEnd = contextEnd,
+                content = source.substring(contextStart, contextEnd)
+            )
+        }
+    }
 
     fun sha256(text: String): String = MessageDigest.getInstance("SHA-256")
         .digest(text.toByteArray(Charsets.UTF_8))

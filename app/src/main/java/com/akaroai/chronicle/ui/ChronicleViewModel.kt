@@ -473,32 +473,49 @@ class ChronicleViewModel(
                 val checkpoint = loadImportCheckpoint(
                     context = context,
                     hash = sourceHash,
-                    expectedSourceLength = text.length,
-                    expectedSegmentCount = segments.size
+                    expectedSourceLength = text.length
                 ).toMutableMap()
-                val rawSegments = MutableList(segments.size) { "" }
-                segments.forEach { segment ->
-                    val cached = checkpoint[segment.index]?.takeIf(ExternalCampaignImport::isValidAnalysis)
-                    if (checkpoint.containsKey(segment.index) && cached == null) {
-                        checkpoint.remove(segment.index)
-                        saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
+                val leafSegments = segments.toMutableList()
+                val pending = segments.toMutableList()
+                val completed = mutableMapOf<String, String>()
+                while (pending.isNotEmpty()) {
+                    val segment = pending.removeAt(0)
+                    val segmentKey = LosslessImportPipeline.key(segment)
+                    val cached = checkpoint[segmentKey]?.takeIf(ExternalCampaignImport::isValidAnalysis)
+                    if (checkpoint.containsKey(segmentKey) && cached == null) {
+                        checkpoint.remove(segmentKey)
+                        saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
                     }
-                    val raw = if (!cached.isNullOrBlank()) cached else {
-                        _importProgress.value = ImportProgress(
-                            stage = "Analyzing safely",
-                            completedSegments = segment.index,
-                            totalSegments = segments.size,
-                            detail = "Segment ${segment.index + 1} of ${segments.size} • complete source preserved"
-                        )
+                    val descendantExists = checkpoint.keys.any { key ->
+                        val bounds = key.split(':').mapNotNull(String::toIntOrNull)
+                        bounds.size == 2 && bounds[0] >= segment.primaryStart && bounds[1] <= segment.primaryEnd &&
+                            (bounds[0] != segment.primaryStart || bounds[1] != segment.primaryEnd)
+                    }
+                    if (cached == null && descendantExists &&
+                        segment.primaryEnd - segment.primaryStart >= LosslessImportPipeline.MIN_ADAPTIVE_CHARS * 2
+                    ) {
+                        val children = LosslessImportPipeline.subdivide(text, segment)
+                        val position = leafSegments.indexOfFirst { LosslessImportPipeline.key(it) == segmentKey }
+                        if (position >= 0) {
+                            leafSegments.removeAt(position)
+                            leafSegments.addAll(position, children)
+                        }
+                        pending.addAll(0, children)
+                        continue
+                    }
+
+                    var raw = cached
+                    if (raw == null) {
                         var lastFailure: Throwable? = null
                         var validResponse: String? = null
+                        var transportFailed = false
                         repeat(3) { attempt ->
-                            if (validResponse != null) return@repeat
+                            if (validResponse != null || transportFailed) return@repeat
                             _importProgress.value = ImportProgress(
                                 stage = if (attempt == 0) "Analyzing safely" else "Repairing segment response",
-                                completedSegments = segment.index,
-                                totalSegments = segments.size,
-                                detail = "Segment ${segment.index + 1} of ${segments.size}" +
+                                completedSegments = completed.size,
+                                totalSegments = leafSegments.size,
+                                detail = "Range ${segment.primaryStart}-${segment.primaryEnd} • " +
                                     if (attempt == 0) " • complete source preserved" else " • retry ${attempt + 1} of 3"
                             )
                             val candidate = runCatching { provider.generate(
@@ -524,39 +541,64 @@ class ChronicleViewModel(
                                 temperature = 0.15,
                                 timeoutSeconds = 600
                             )
-                            ) }.onFailure { lastFailure = it }.getOrNull()
+                            ) }.onFailure {
+                                lastFailure = it
+                                transportFailed = true
+                            }.getOrNull()
                             if (candidate != null && ExternalCampaignImport.isValidAnalysis(candidate)) {
                                 validResponse = candidate
                             } else if (candidate != null) {
                                 lastFailure = IllegalStateException("The AI returned text instead of structured campaign data.")
                             }
                         }
-                        val repaired = validResponse ?: throw IllegalStateException(
-                            "The AI could not structure segment ${segment.index + 1} after 3 attempts. " +
-                                "Your import checkpoint is safe; try again to resume.",
-                            lastFailure
+                        if (validResponse == null &&
+                            segment.primaryEnd - segment.primaryStart >= LosslessImportPipeline.MIN_ADAPTIVE_CHARS * 2
+                        ) {
+                            val children = LosslessImportPipeline.subdivide(text, segment)
+                            val position = leafSegments.indexOfFirst { LosslessImportPipeline.key(it) == segmentKey }
+                            if (position >= 0) {
+                                leafSegments.removeAt(position)
+                                leafSegments.addAll(position, children)
+                            }
+                            pending.addAll(0, children)
+                            saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
+                            _importProgress.value = ImportProgress(
+                                stage = "Adapting dense segment",
+                                completedSegments = completed.size,
+                                totalSegments = leafSegments.size,
+                                detail = "That range was too dense, so Chronicle split only that range in two."
+                            )
+                            continue
+                        }
+                        val completedRaw = validResponse ?: throw IllegalStateException(
+                            "The AI could not structure source range ${segment.primaryStart}-${segment.primaryEnd}. " +
+                                "Your completed checkpoints are safe; try again to resume.", lastFailure
                         )
-                        checkpoint[segment.index] = repaired
-                        saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
-                        repaired
+                        raw = completedRaw
+                        checkpoint[segmentKey] = completedRaw
+                        saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
                     }
-                    rawSegments[segment.index] = raw
+                    completed[segmentKey] = raw ?: error("Completed import range had no analysis.")
                     _importProgress.value = ImportProgress(
                         stage = "Analyzing safely",
-                        completedSegments = segment.index + 1,
-                        totalSegments = segments.size,
-                        detail = "Segment ${segment.index + 1} of ${segments.size} complete"
+                        completedSegments = completed.size,
+                        totalSegments = leafSegments.size,
+                        detail = "Range ${segment.primaryStart}-${segment.primaryEnd} complete"
                     )
                 }
 
+                val adaptiveCoverage = LosslessImportPipeline.verifyCoverage(text, leafSegments)
+                check(adaptiveCoverage.complete) { "Adaptive segmentation left a source gap." }
+                val rawSegments = completed.entries.sortedBy { it.key.substringBefore(':').toInt() }.map { it.value }
+
                 _importProgress.value = ImportProgress(
-                    "Combining extracted records", segments.size, segments.size,
+                    "Combining extracted records", leafSegments.size, leafSegments.size,
                     "Merging characters, locations, quests, timeline, and memories…"
                 )
                 val merged = ExternalCampaignImport.mergeAnalyses(rawSegments, text)
                 _importProgress.value = ImportProgress(
-                    "Checking continuity", segments.size, segments.size,
-                    "Coverage ${coverage.coveredCharacters}/${coverage.sourceLength} characters • no gaps"
+                    "Checking continuity", leafSegments.size, leafSegments.size,
+                    "Coverage ${adaptiveCoverage.coveredCharacters}/${adaptiveCoverage.sourceLength} characters • no gaps"
                 )
                 val parsedDraft = seedMissingLocationsFromSource(
                     merged,
@@ -564,7 +606,7 @@ class ChronicleViewModel(
                 )
                 _externalImportDraft.value = seedImportedCharacterPresence(parsedDraft)
                 _importProgress.value = ImportProgress(
-                    "Import Review ready", segments.size, segments.size,
+                    "Import Review ready", leafSegments.size, leafSegments.size,
                     "Every source character was covered; the original document remains attached."
                 )
             } catch (t: Throwable) {
@@ -581,20 +623,19 @@ class ChronicleViewModel(
     private fun loadImportCheckpoint(
         context: Context,
         hash: String,
-        expectedSourceLength: Int,
-        expectedSegmentCount: Int
-    ): Map<Int, String> = runCatching {
+        expectedSourceLength: Int
+    ): Map<String, String> = runCatching {
         val file = checkpointFile(context, hash)
         if (!file.exists()) return emptyMap()
         val root = JSONObject(file.readText(Charsets.UTF_8))
         if (root.optString("sourceSha256") != hash ||
             root.optInt("sourceLength", -1) != expectedSourceLength ||
-            root.optInt("segmentCount", -1) != expectedSegmentCount
+            root.optInt("segmentationVersion", -1) != 2
         ) return emptyMap()
-        val analyses = root.optJSONArray("analyses") ?: return emptyMap()
+        val analyses = root.optJSONObject("analysesByRange") ?: return emptyMap()
         buildMap {
-            for (index in 0 until analyses.length()) {
-                analyses.optString(index).takeIf(String::isNotBlank)?.let { put(index, it) }
+            analyses.keys().forEach { key ->
+                analyses.optString(key).takeIf(String::isNotBlank)?.let { put(key, it) }
             }
         }
     }.getOrDefault(emptyMap())
@@ -604,17 +645,18 @@ class ChronicleViewModel(
         hash: String,
         sourceLength: Int,
         segmentCount: Int,
-        analyses: Map<Int, String>
+        analyses: Map<String, String>
     ) {
         val file = checkpointFile(context, hash)
         file.parentFile?.mkdirs()
-        val array = JSONArray()
-        repeat(segmentCount) { array.put(analyses[it].orEmpty()) }
+        val byRange = JSONObject()
+        analyses.forEach { (range, analysis) -> byRange.put(range, analysis) }
         val root = JSONObject()
             .put("sourceSha256", hash)
             .put("sourceLength", sourceLength)
             .put("segmentCount", segmentCount)
-            .put("analyses", array)
+            .put("segmentationVersion", 2)
+            .put("analysesByRange", byRange)
         val temporary = File(file.parentFile, "${file.name}.writing")
         temporary.writeText(root.toString(), Charsets.UTF_8)
         if (!temporary.renameTo(file)) {
