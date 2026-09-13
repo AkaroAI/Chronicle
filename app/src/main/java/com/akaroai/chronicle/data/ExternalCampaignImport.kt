@@ -100,6 +100,10 @@ data class ExternalImportDraft(
 )
 
 object ExternalCampaignImport {
+    fun isValidAnalysis(raw: String): Boolean = runCatching {
+        parseAnalysis(raw, "")
+    }.isSuccess
+
     fun mergeAnalyses(rawSegments: List<String>, sourceText: String): ExternalImportDraft {
         require(rawSegments.isNotEmpty()) { "No analyzed import segments were available." }
         val drafts = rawSegments.map { parseAnalysis(it, "") }
@@ -134,9 +138,9 @@ object ExternalCampaignImport {
     }
 
     fun parseAnalysis(raw: String, sourceText: String): ExternalImportDraft {
-        val clean = raw.trim()
+        val clean = extractJsonObject(raw.trim()
             .removePrefix("```json").removePrefix("```")
-            .removeSuffix("```").trim()
+            .removeSuffix("```").trim())
         val o = JSONObject(clean)
         return ExternalImportDraft(
             campaignName = o.optString("campaignName", "Imported Campaign").ifBlank { "Imported Campaign" },
@@ -293,6 +297,35 @@ object ExternalCampaignImport {
         "high", "high confidence" -> "High confidence"
         "ambiguous" -> "Ambiguous"
         else -> "Needs review"
+    }
+
+    private fun extractJsonObject(raw: String): String {
+        if (raw.startsWith("{") && raw.endsWith("}")) return raw
+        val start = raw.indexOf('{')
+        require(start >= 0) { "The AI returned text instead of campaign data. Chronicle will retry this segment." }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until raw.length) {
+            val char = raw[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+            } else {
+                when (char) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return raw.substring(start, index + 1)
+                    }
+                }
+            }
+        }
+        error("The AI returned incomplete campaign data. Chronicle will retry this segment.")
     }
 
     private fun prefer(old: String, new: String): String = new.trim().ifBlank { old.trim() }

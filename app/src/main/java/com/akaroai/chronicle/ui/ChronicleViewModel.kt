@@ -467,7 +467,11 @@ class ChronicleViewModel(
                 val checkpoint = loadImportCheckpoint(context, sourceHash).toMutableMap()
                 val rawSegments = MutableList(segments.size) { "" }
                 segments.forEach { segment ->
-                    val cached = checkpoint[segment.index]
+                    val cached = checkpoint[segment.index]?.takeIf(ExternalCampaignImport::isValidAnalysis)
+                    if (checkpoint.containsKey(segment.index) && cached == null) {
+                        checkpoint.remove(segment.index)
+                        saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
+                    }
                     val raw = if (!cached.isNullOrBlank()) cached else {
                         _importProgress.value = ImportProgress(
                             stage = "Analyzing safely",
@@ -475,15 +479,27 @@ class ChronicleViewModel(
                             totalSegments = segments.size,
                             detail = "Segment ${segment.index + 1} of ${segments.size} • complete source preserved"
                         )
-                        provider.generate(
-                            ProviderRequest(
-                                systemPrompt = system + """
+                        var lastFailure: Throwable? = null
+                        var validResponse: String? = null
+                        repeat(3) { attempt ->
+                            if (validResponse != null) return@repeat
+                            _importProgress.value = ImportProgress(
+                                stage = if (attempt == 0) "Analyzing safely" else "Repairing segment response",
+                                completedSegments = segment.index,
+                                totalSegments = segments.size,
+                                detail = "Segment ${segment.index + 1} of ${segments.size}" +
+                                    if (attempt == 0) " • complete source preserved" else " • retry ${attempt + 1} of 3"
+                            )
+                            val candidate = runCatching { provider.generate(
+                                ProviderRequest(
+                                    systemPrompt = system + """
 
                                     SEGMENT RULES
                                     - This is one lossless segment of a larger document.
                                     - Extract only facts supported inside this segment and its overlap context.
                                     - Do not assume this segment is the beginning or ending of the campaign.
                                     - Repeated overlap text must not cause invented duplicate records.
+                                    - Your entire response must begin with { and end with }. No greeting or explanation.
                                 """.trimIndent(),
                                 memoryContext = "",
                                 messages = listOf(
@@ -497,10 +513,21 @@ class ChronicleViewModel(
                                 temperature = 0.15,
                                 timeoutSeconds = 600
                             )
-                        ).also {
-                            checkpoint[segment.index] = it
-                            saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
+                            ) }.onFailure { lastFailure = it }.getOrNull()
+                            if (candidate != null && ExternalCampaignImport.isValidAnalysis(candidate)) {
+                                validResponse = candidate
+                            } else if (candidate != null) {
+                                lastFailure = IllegalStateException("The AI returned text instead of structured campaign data.")
+                            }
                         }
+                        val repaired = validResponse ?: throw IllegalStateException(
+                            "The AI could not structure segment ${segment.index + 1} after 3 attempts. " +
+                                "Your import checkpoint is safe; try again to resume.",
+                            lastFailure
+                        )
+                        checkpoint[segment.index] = repaired
+                        saveImportCheckpoint(context, sourceHash, text.length, segments.size, checkpoint)
+                        repaired
                     }
                     rawSegments[segment.index] = raw
                     _importProgress.value = ImportProgress(

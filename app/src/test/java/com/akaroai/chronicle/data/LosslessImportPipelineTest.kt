@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class LosslessImportPipelineTest {
+    @Test
+    fun rejectsConversationalTextAndAcceptsWrappedJson() {
+        assertFalse(ExternalCampaignImport.isValidAnalysis("Welcome to the campaign!"))
+        assertTrue(ExternalCampaignImport.isValidAnalysis("Here is the result:\n{\"campaignName\":\"Asira\"}\nDone"))
+    }
+
     @Test fun `primary ranges preserve every source character exactly once`() {
         val source = (1..900).joinToString("\n\n") { "Player: line $it. Asira answers line $it." }
         val segments = LosslessImportPipeline.segment(source, targetChars = 2_500, overlapChars = 240)
