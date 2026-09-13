@@ -369,6 +369,38 @@ fun ChronicleScreen(vm: ChronicleViewModel) {
         )
     }
 
+    if (importAnalyzing) {
+        val progress = importProgress
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text(progress?.stage ?: "Preparing import") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    val total = progress?.totalSegments ?: 0
+                    if (total > 0) {
+                        LinearProgressIndicator(
+                            progress = { progress?.fraction ?: 0f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text("${progress?.completedSegments ?: 0} of $total segments analyzed")
+                    } else {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    Text(
+                        progress?.detail ?: "Chronicle is preserving and preparing the complete document.",
+                        color = ChronicleColors.MutedInk
+                    )
+                    Text(
+                        "You can reselect the same file after an interruption; completed segments are reused.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = ChronicleColors.Cyan
+                    )
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
     selected?.let { c ->
         if (editCampaign) {
             CampaignEditorDialog(c, { editCampaign = false }) {
@@ -512,37 +544,6 @@ private fun ChatTab(vm: ChronicleViewModel, real: Boolean) {
         }
     }
 
-    if (importAnalyzing) {
-        val progress = importProgress
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text(progress?.stage ?: "Preparing import") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    val total = progress?.totalSegments ?: 0
-                    if (total > 0) {
-                        LinearProgressIndicator(
-                            progress = { progress?.fraction ?: 0f },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Text("${progress?.completedSegments ?: 0} of $total segments analyzed")
-                    } else {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                    }
-                    Text(
-                        progress?.detail ?: "Chronicle is preserving and preparing the complete document.",
-                        color = ChronicleColors.MutedInk
-                    )
-                    Text(
-                        "You can reselect the same file after an interruption; completed segments are reused.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = ChronicleColors.Cyan
-                    )
-                }
-            },
-            confirmButton = {}
-        )
-    }
 }
 
 @Composable
