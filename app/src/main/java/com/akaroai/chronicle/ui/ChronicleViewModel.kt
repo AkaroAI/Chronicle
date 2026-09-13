@@ -464,7 +464,12 @@ class ChronicleViewModel(
                     }
                 """.trimIndent()
 
-                val checkpoint = loadImportCheckpoint(context, sourceHash).toMutableMap()
+                val checkpoint = loadImportCheckpoint(
+                    context = context,
+                    hash = sourceHash,
+                    expectedSourceLength = text.length,
+                    expectedSegmentCount = segments.size
+                ).toMutableMap()
                 val rawSegments = MutableList(segments.size) { "" }
                 segments.forEach { segment ->
                     val cached = checkpoint[segment.index]?.takeIf(ExternalCampaignImport::isValidAnalysis)
@@ -567,10 +572,19 @@ class ChronicleViewModel(
     private fun checkpointFile(context: Context, hash: String): File =
         File(context.filesDir, "import-checkpoints").resolve("$hash.json")
 
-    private fun loadImportCheckpoint(context: Context, hash: String): Map<Int, String> = runCatching {
+    private fun loadImportCheckpoint(
+        context: Context,
+        hash: String,
+        expectedSourceLength: Int,
+        expectedSegmentCount: Int
+    ): Map<Int, String> = runCatching {
         val file = checkpointFile(context, hash)
         if (!file.exists()) return emptyMap()
         val root = JSONObject(file.readText(Charsets.UTF_8))
+        if (root.optString("sourceSha256") != hash ||
+            root.optInt("sourceLength", -1) != expectedSourceLength ||
+            root.optInt("segmentCount", -1) != expectedSegmentCount
+        ) return emptyMap()
         val analyses = root.optJSONArray("analyses") ?: return emptyMap()
         buildMap {
             for (index in 0 until analyses.length()) {
