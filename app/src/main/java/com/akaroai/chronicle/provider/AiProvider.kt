@@ -21,7 +21,8 @@ data class ProviderRequest(
     val memoryContext: String,
     val messages: List<ProviderMessage>,
     val temperature: Double = 0.7,
-    val nativeEnginePayload: JSONObject? = null
+    val nativeEnginePayload: JSONObject? = null,
+    val timeoutSeconds: Long = 120
 )
 
 interface AiProvider {
@@ -79,7 +80,10 @@ class OpenAiCompatibleProvider(
             }
             .build()
 
-        client.newCall(httpRequest).execute().use { response ->
+        client.newBuilder()
+            .readTimeout(request.timeoutSeconds.coerceIn(30, 900), TimeUnit.SECONDS)
+            .build()
+            .newCall(httpRequest).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IllegalStateException("Provider error ${response.code}: $body")

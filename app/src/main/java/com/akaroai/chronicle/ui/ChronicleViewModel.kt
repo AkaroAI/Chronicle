@@ -10,6 +10,7 @@ import com.akaroai.chronicle.data.ExternalCampaignImport
 import com.akaroai.chronicle.data.ExternalImportDraft
 import com.akaroai.chronicle.data.ImportedLocationDraft
 import com.akaroai.chronicle.data.LosslessImportPipeline
+import com.akaroai.chronicle.data.ImportDocumentReader
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
 import kotlinx.coroutines.Dispatchers
@@ -370,7 +371,7 @@ class ChronicleViewModel(
             _lastError.value = null
             try {
                 val text = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    context.contentResolver.openInputStream(uri)?.use { ImportDocumentReader.read(it) }
                         ?: error("Could not read that campaign file.")
                 }
                 if (text.isBlank()) error("That campaign file is empty.")
@@ -493,7 +494,8 @@ class ChronicleViewModel(
                                             segment.content
                                     )
                                 ),
-                                temperature = 0.15
+                                temperature = 0.15,
+                                timeoutSeconds = 600
                             )
                         ).also {
                             checkpoint[segment.index] = it
