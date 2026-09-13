@@ -9,6 +9,8 @@ import com.akaroai.chronicle.data.ChronicleRepository
 import com.akaroai.chronicle.data.ExternalCampaignImport
 import com.akaroai.chronicle.data.ExternalImportDraft
 import com.akaroai.chronicle.data.ImportedLocationDraft
+import com.akaroai.chronicle.data.LosslessImportPipeline
+import com.akaroai.chronicle.data.ImportDocumentReader
 import com.akaroai.chronicle.model.*
 import com.akaroai.chronicle.provider.*
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +18,20 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import org.json.JSONObject
+import org.json.JSONArray
+import java.io.File
+
+data class ImportProgress(
+    val stage: String,
+    val completedSegments: Int = 0,
+    val totalSegments: Int = 0,
+    val detail: String = ""
+) {
+    val fraction: Float get() = if (totalSegments == 0) 0f
+        else completedSegments.toFloat() / totalSegments.toFloat()
+}
 
 class ChronicleViewModel(
     private val repository: ChronicleRepository,
@@ -86,6 +102,9 @@ class ChronicleViewModel(
     private val _pendingCanonTurn = MutableStateFlow<String?>(null)
     val pendingCanonTurn = _pendingCanonTurn.asStateFlow()
     private var _pendingTurnProposalIds: Set<Long> = emptySet()
+    private var pendingTurnNeedsFinalRegeneration = false
+    private var pendingTurnResolutionDirective = ""
+    private var resumePendingTurnJob: Job? = null
 
     private val _turnPhase = MutableStateFlow("IDLE")
     val turnPhase = _turnPhase.asStateFlow()
@@ -95,6 +114,9 @@ class ChronicleViewModel(
 
     private val _isImportAnalyzing = MutableStateFlow(false)
     val isImportAnalyzing = _isImportAnalyzing.asStateFlow()
+
+    private val _importProgress = MutableStateFlow<ImportProgress?>(null)
+    val importProgress = _importProgress.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -198,6 +220,7 @@ class ChronicleViewModel(
         val source = draft.sourceText
 
         val updatedCharacters = draft.characters.map { character ->
+            if (character.currentLocation.isNotBlank()) return@map character
             val explicitExisting = Regex("""(?i)Currently at\s+([^.\n]+)\.""")
                 .findAll(character.notes)
                 .lastOrNull()
@@ -241,6 +264,7 @@ class ChronicleViewModel(
                     character
                 } else {
                     character.copy(
+                        currentLocation = latest,
                         notes = listOf(character.notes.trim(), "Currently at $latest.")
                             .filter { it.isNotBlank() }
                             .joinToString("\n"),
@@ -263,6 +287,11 @@ class ChronicleViewModel(
     fun saveProviderSettings(s: ProviderSettings) {
         settingsStore.save(s)
         _providerSettings.value = settingsStore.load()
+        _notice.value = if (s.enabled) {
+            "AI connection saved. Chronicle will use ${s.model.ifBlank { "the selected model" }}."
+        } else {
+            "Demo mode enabled."
+        }
     }
 
     fun selectCampaign(id: Long) { selectedId.value = id }
@@ -342,11 +371,17 @@ class ChronicleViewModel(
             _lastError.value = null
             try {
                 val text = withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    context.contentResolver.openInputStream(uri)?.use { ImportDocumentReader.read(it) }
                         ?: error("Could not read that campaign file.")
                 }
                 if (text.isBlank()) error("That campaign file is empty.")
-                if (text.length > 1_500_000) error("This file is too large for one-pass import. Split it into smaller parts first.")
+                if (text.length > 20_000_000) error("This document exceeds Chronicle's current 20-million-character safety limit.")
+
+                _importProgress.value = ImportProgress("Preparing complete document", detail = "Verifying the untouched source…")
+                val sourceHash = LosslessImportPipeline.sha256(text)
+                val segments = LosslessImportPipeline.segment(text)
+                val coverage = LosslessImportPipeline.verifyCoverage(text, segments)
+                check(coverage.complete) { "Source coverage verification failed before analysis." }
 
                 val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
                 val system = """
@@ -367,6 +402,12 @@ class ChronicleViewModel(
                     Do not promote a character merely because their name appears often in one scene.
 
                     Extract durable canon, not every sentence. Preserve contradictions by marking Ambiguous.
+                    This is structured extraction, not creative writing. Be extremely compact:
+                    - Never rewrite, embellish, continue, summarize dramatically, or imitate the campaign prose.
+                    - Use at most one concise sentence per scalar field.
+                    - Keep ordinary scalar fields under 240 characters and notes under 400 characters.
+                    - Use empty strings and empty arrays for facts not established in this segment.
+                    - Preserve every distinct durable fact, but express it once in the narrowest matching field.
                     For every named character, determine their LAST explicitly established current location when possible.
                     If confidently established, append the exact sentence "Currently at LOCATION_NAME." to that character's notes.
                     If current location is unknown or only historical, do not guess.
@@ -429,19 +470,145 @@ class ChronicleViewModel(
                     }
                 """.trimIndent()
 
-                val raw = provider.generate(
-                    ProviderRequest(
-                        systemPrompt = system,
-                        memoryContext = "",
-                        messages = listOf(ProviderMessage("user", "SOURCE CAMPAIGN MATERIAL:\n$text")),
-                        temperature = 0.2
+                val checkpoint = loadImportCheckpoint(
+                    context = context,
+                    hash = sourceHash,
+                    expectedSourceLength = text.length
+                ).toMutableMap()
+                val leafSegments = segments.toMutableList()
+                val pending = segments.toMutableList()
+                val completed = mutableMapOf<String, String>()
+                while (pending.isNotEmpty()) {
+                    val segment = pending.removeAt(0)
+                    val segmentKey = LosslessImportPipeline.key(segment)
+                    val cached = checkpoint[segmentKey]?.takeIf(ExternalCampaignImport::isValidAnalysis)
+                    if (checkpoint.containsKey(segmentKey) && cached == null) {
+                        checkpoint.remove(segmentKey)
+                        saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
+                    }
+                    val descendantExists = checkpoint.keys.any { key ->
+                        val bounds = key.split(':').mapNotNull(String::toIntOrNull)
+                        bounds.size == 2 && bounds[0] >= segment.primaryStart && bounds[1] <= segment.primaryEnd &&
+                            (bounds[0] != segment.primaryStart || bounds[1] != segment.primaryEnd)
+                    }
+                    if (cached == null && descendantExists &&
+                        segment.primaryEnd - segment.primaryStart >= LosslessImportPipeline.MIN_ADAPTIVE_CHARS * 2
+                    ) {
+                        val children = LosslessImportPipeline.subdivide(text, segment)
+                        val position = leafSegments.indexOfFirst { LosslessImportPipeline.key(it) == segmentKey }
+                        if (position >= 0) {
+                            leafSegments.removeAt(position)
+                            leafSegments.addAll(position, children)
+                        }
+                        pending.addAll(0, children)
+                        continue
+                    }
+
+                    var raw = cached
+                    if (raw == null) {
+                        var lastFailure: Throwable? = null
+                        var validResponse: String? = null
+                        var transportFailed = false
+                        repeat(3) { attempt ->
+                            if (validResponse != null || transportFailed) return@repeat
+                            _importProgress.value = ImportProgress(
+                                stage = if (attempt == 0) "Analyzing safely" else "Repairing segment response",
+                                completedSegments = completed.size,
+                                totalSegments = leafSegments.size,
+                                detail = "Range ${segment.primaryStart}-${segment.primaryEnd} • " +
+                                    if (attempt == 0) " • complete source preserved" else " • retry ${attempt + 1} of 3"
+                            )
+                            val candidate = runCatching { provider.generate(
+                                ProviderRequest(
+                                    systemPrompt = system + """
+
+                                    SEGMENT RULES
+                                    - This is one lossless segment of a larger document.
+                                    - Extract only facts supported inside this segment and its overlap context.
+                                    - Do not assume this segment is the beginning or ending of the campaign.
+                                    - Repeated overlap text must not cause invented duplicate records.
+                                    - Your entire response must begin with { and end with }. No greeting or explanation.
+                                """.trimIndent(),
+                                memoryContext = "",
+                                messages = listOf(
+                                    ProviderMessage(
+                                        "user",
+                                        "SOURCE RANGE ${segment.primaryStart}-${segment.primaryEnd} " +
+                                            "OF ${text.length}; CONTEXT RANGE ${segment.contextStart}-${segment.contextEnd}:\n" +
+                                            segment.content
+                                    )
+                                ),
+                                temperature = 0.15,
+                                timeoutSeconds = 600
+                            )
+                            ) }.onFailure {
+                                lastFailure = it
+                                transportFailed = true
+                            }.getOrNull()
+                            if (candidate != null && ExternalCampaignImport.isValidAnalysis(candidate)) {
+                                validResponse = candidate
+                            } else if (candidate != null) {
+                                lastFailure = IllegalStateException("The AI returned text instead of structured campaign data.")
+                            }
+                        }
+                        if (validResponse == null &&
+                            segment.primaryEnd - segment.primaryStart >= LosslessImportPipeline.MIN_ADAPTIVE_CHARS * 2
+                        ) {
+                            val children = LosslessImportPipeline.subdivide(text, segment)
+                            val position = leafSegments.indexOfFirst { LosslessImportPipeline.key(it) == segmentKey }
+                            if (position >= 0) {
+                                leafSegments.removeAt(position)
+                                leafSegments.addAll(position, children)
+                            }
+                            pending.addAll(0, children)
+                            saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
+                            _importProgress.value = ImportProgress(
+                                stage = "Adapting dense segment",
+                                completedSegments = completed.size,
+                                totalSegments = leafSegments.size,
+                                detail = "That range was too dense, so Chronicle split only that range in two."
+                            )
+                            continue
+                        }
+                        val completedRaw = validResponse ?: throw IllegalStateException(
+                            "The AI could not structure source range ${segment.primaryStart}-${segment.primaryEnd}. " +
+                                "Your completed checkpoints are safe; try again to resume.", lastFailure
+                        )
+                        raw = completedRaw
+                        checkpoint[segmentKey] = completedRaw
+                        saveImportCheckpoint(context, sourceHash, text.length, leafSegments.size, checkpoint)
+                    }
+                    completed[segmentKey] = raw ?: error("Completed import range had no analysis.")
+                    _importProgress.value = ImportProgress(
+                        stage = "Analyzing safely",
+                        completedSegments = completed.size,
+                        totalSegments = leafSegments.size,
+                        detail = "Range ${segment.primaryStart}-${segment.primaryEnd} complete"
                     )
+                }
+
+                val adaptiveCoverage = LosslessImportPipeline.verifyCoverage(text, leafSegments)
+                check(adaptiveCoverage.complete) { "Adaptive segmentation left a source gap." }
+                val rawSegments = completed.entries.sortedBy { it.key.substringBefore(':').toInt() }.map { it.value }
+
+                _importProgress.value = ImportProgress(
+                    "Combining extracted records", leafSegments.size, leafSegments.size,
+                    "Merging characters, locations, quests, timeline, and memories…"
+                )
+                val merged = ExternalCampaignImport.mergeAnalyses(rawSegments, text)
+                _importProgress.value = ImportProgress(
+                    "Checking continuity", leafSegments.size, leafSegments.size,
+                    "Coverage ${adaptiveCoverage.coveredCharacters}/${adaptiveCoverage.sourceLength} characters • no gaps"
                 )
                 val parsedDraft = seedMissingLocationsFromSource(
-                    ExternalCampaignImport.parseAnalysis(raw, text),
+                    merged,
                     text
                 )
                 _externalImportDraft.value = seedImportedCharacterPresence(parsedDraft)
+                _importProgress.value = ImportProgress(
+                    "Import Review ready", leafSegments.size, leafSegments.size,
+                    "Every source character was covered; the original document remains attached."
+                )
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "External campaign analysis failed."
             } finally {
@@ -450,8 +617,57 @@ class ChronicleViewModel(
         }
     }
 
+    private fun checkpointFile(context: Context, hash: String): File =
+        File(context.filesDir, "import-checkpoints").resolve("$hash.json")
+
+    private fun loadImportCheckpoint(
+        context: Context,
+        hash: String,
+        expectedSourceLength: Int
+    ): Map<String, String> = runCatching {
+        val file = checkpointFile(context, hash)
+        if (!file.exists()) return emptyMap()
+        val root = JSONObject(file.readText(Charsets.UTF_8))
+        if (root.optString("sourceSha256") != hash ||
+            root.optInt("sourceLength", -1) != expectedSourceLength ||
+            root.optInt("segmentationVersion", -1) != 2
+        ) return emptyMap()
+        val analyses = root.optJSONObject("analysesByRange") ?: return emptyMap()
+        buildMap {
+            analyses.keys().forEach { key ->
+                analyses.optString(key).takeIf(String::isNotBlank)?.let { put(key, it) }
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    private fun saveImportCheckpoint(
+        context: Context,
+        hash: String,
+        sourceLength: Int,
+        segmentCount: Int,
+        analyses: Map<String, String>
+    ) {
+        val file = checkpointFile(context, hash)
+        file.parentFile?.mkdirs()
+        val byRange = JSONObject()
+        analyses.forEach { (range, analysis) -> byRange.put(range, analysis) }
+        val root = JSONObject()
+            .put("sourceSha256", hash)
+            .put("sourceLength", sourceLength)
+            .put("segmentCount", segmentCount)
+            .put("segmentationVersion", 2)
+            .put("analysesByRange", byRange)
+        val temporary = File(file.parentFile, "${file.name}.writing")
+        temporary.writeText(root.toString(), Charsets.UTF_8)
+        if (!temporary.renameTo(file)) {
+            file.writeText(root.toString(), Charsets.UTF_8)
+            temporary.delete()
+        }
+    }
+
     fun cancelExternalImport() {
         _externalImportDraft.value = null
+        _importProgress.value = null
     }
 
     fun commitExternalImport(draft: ExternalImportDraft) {
@@ -460,6 +676,7 @@ class ChronicleViewModel(
                 val id = repository.commitExternalImport(draft)
                 selectedId.value = id
                 _externalImportDraft.value = null
+                _importProgress.value = null
                 _notice.value = "External campaign imported. Review its characters and memories before continuing."
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not create imported campaign."
@@ -523,10 +740,18 @@ class ChronicleViewModel(
             maybeResumePendingCanonTurn()
         }
 
-    fun sendMessage(text: String) {
+    fun sendMessage(
+        text: String,
+        mode: String = "Story",
+        actor: String = "Player",
+        intent: String = "Action",
+        target: String = "Scene"
+    ) {
         val campaign = selectedCampaign.value ?: return
         if (text.isBlank() || _isGenerating.value) return
-        if (_pendingCanonTurn.value != null) {
+        val dmConversation = mode.equals("DM", true) ||
+            (target.equals("DM", true) && intent.equals("Talking to", true))
+        if (_pendingCanonTurn.value != null && !dmConversation) {
             _notice.value = "This turn is waiting for Review. Resolve its canon proposals before sending another story action."
             return
         }
@@ -537,40 +762,55 @@ class ChronicleViewModel(
             _lastError.value = null
 
             try {
-                repository.addMessage(campaign.id, "user", text)
+                val routedText = if (dmConversation) {
+                    "[DM Conversation]\n$text"
+                } else {
+                    "[Story | Actor: $actor | Intent: $intent | Target: $target]\n$text"
+                }
+                repository.addMessage(campaign.id, "user", routedText)
                 val pendingBeforeTurn = repository.pendingProposalIds(campaign.id)
-
-                // Phase 1: deterministic canon detection.
-                repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
-                repository.proposeExplicitQuestCommand(campaign.id, text)
 
                 val provider: AiProvider =
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
 
-                // Phase 1b: AI canon analysis happens BEFORE storyteller generation.
+                if (dmConversation) {
+                    _turnPhase.value = "DM_CONVERSATION"
+                    generateDmReply(campaign, provider)
+                    _turnPhase.value = "IDLE"
+                    return@launch
+                }
+
+                // Phase 1: deterministic canon detection.
+                repository.proposeExplicitCharacterMovementCommand(campaign.id, text)
+                repository.proposeExplicitQuestCommand(campaign.id, text)
+                repository.proposeExplicitCampaignYear(campaign.id, text)
+                proposeExplicitPairedInteraction(campaign.id, text)
+
+                // Canon-changing player statements are reviewed before the storyteller can use
+                // them. This activates the existing pending-turn resume path instead of allowing
+                // narration to race ahead of Review.
                 if (_providerSettings.value.enabled) {
+                    val latestCampaign = repository.campaignById(campaign.id) ?: campaign
                     scanForProposals(
-                        campaign = campaign,
-                        context = repository.buildAutomationContextSnapshot(campaign),
-                        userText = text,
+                        campaign = latestCampaign,
+                        context = repository.buildAutomationContextSnapshot(latestCampaign),
+                        userText = routedText,
                         assistantReply = "",
                         provider = provider
                     )
                 }
 
-                val newPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
-                if (newPending.isNotEmpty()) {
-                    _pendingTurnProposalIds = newPending
-                    _pendingCanonTurn.value = text
+                val preStoryPending = repository.pendingProposalIds(campaign.id) - pendingBeforeTurn
+                if (preStoryPending.isNotEmpty()) {
+                    _pendingCanonTurn.value = routedText
+                    _pendingTurnProposalIds = preStoryPending
                     _turnPhase.value = "AWAITING_REVIEW"
-                    _notice.value = "${newPending.size} canon change${if (newPending.size == 1) "" else "s"} need Review before the story continues."
+                    _notice.value = "Review ${preStoryPending.size} canon suggestion${if (preStoryPending.size == 1) "" else "s"} before the story continues."
                     return@launch
                 }
 
-                _turnPhase.value = "GENERATING_STORY"
-                generateStoryReply(campaign, text, provider)
-                _turnPhase.value = "IDLE"
+                completeStoryTurn(campaign, routedText, provider)
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Unknown AI provider error."
             } finally {
@@ -582,15 +822,143 @@ class ChronicleViewModel(
         }
     }
 
+    private suspend fun completeStoryTurn(
+        campaign: CampaignEntity,
+        userText: String,
+        provider: AiProvider,
+        resolutionDirective: String = ""
+    ) {
+        val pendingBeforeDraft = repository.pendingProposalIds(campaign.id)
+        _turnPhase.value = "GENERATING_DRAFT"
+        val draft = generateStoryReply(
+            campaign, userText, provider, persist = false,
+            resolutionDirective = resolutionDirective
+        )
+
+        if (_providerSettings.value.enabled) {
+            _turnPhase.value = "POST_STORY_SCAN"
+            val latestCampaign = repository.campaignById(campaign.id) ?: campaign
+            scanForProposals(
+                campaign = latestCampaign,
+                context = repository.buildAutomationContextSnapshot(latestCampaign),
+                userText = userText,
+                assistantReply = draft,
+                provider = provider
+            )
+        }
+
+        val postStoryPending = repository.pendingProposalIds(campaign.id) - pendingBeforeDraft
+        if (postStoryPending.isNotEmpty()) {
+            _pendingCanonTurn.value = userText
+            _pendingTurnProposalIds = postStoryPending
+            pendingTurnNeedsFinalRegeneration = true
+            pendingTurnResolutionDirective = resolutionDirective
+            _turnPhase.value = "AWAITING_RESPONSE_REVIEW"
+            _notice.value = "Review ${postStoryPending.size} suggestion${if (postStoryPending.size == 1) "" else "s"} from the draft before Chronicle publishes the response."
+        } else {
+            repository.addMessage(campaign.id, "assistant", draft)
+            _turnPhase.value = "IDLE"
+        }
+    }
+
+    private suspend fun proposeExplicitPairedInteraction(campaignId: Long, rawText: String) {
+        val interaction = ChatRouting.parsePairedInteraction(rawText) ?: return
+        val (first, second, action) = interaction
+        val existing = repository.charactersSnapshot(campaignId)
+
+        for (name in listOf(first, second)) {
+            if (existing.none { it.name.equals(name, true) || it.aliases.split(',').any { alias -> alias.trim().equals(name, true) } }) {
+                repository.addProposal(
+                    ChangeProposalEntity(
+                        campaignId = campaignId,
+                        summary = "Create character sheet for $name",
+                        targetType = "character_new",
+                        proposedChanges = JSONObject()
+                            .put("name", name).put("aliases", "").put("species", "").put("age", "")
+                            .put("pronouns", "").put("appearance", "").put("personality", "")
+                            .put("backstory", "").put("abilities", "").put("equipment", "")
+                            .put("relationship", "").put("affiliations", "").put("goals", "")
+                            .put("fears", "").put("secrets", "").put("injuries", "")
+                            .put("notes", "").put("currentLocation", "").put("status", "Active")
+                            .put("castTier", "Supporting").toString(),
+                        reason = "$name was explicitly named by the player in a durable character interaction.",
+                        groupType = "Characters",
+                        groupLabel = name,
+                        evidenceType = "Player Confirmed"
+                    )
+                )
+            }
+        }
+
+        existing.filter { it.name.equals(first, true) || it.name.equals(second, true) }.forEach { character ->
+            val other = if (character.name.equals(first, true)) second else first
+            repository.addProposal(
+                ChangeProposalEntity(
+                    campaignId = campaignId,
+                    summary = "Record ${character.name}'s interaction with $other",
+                    targetType = "character_update",
+                    targetId = character.id,
+                    proposedChanges = JSONObject().put("fields", JSONObject().put("notes", "$action with $other.")).toString(),
+                    reason = "The player explicitly stated that ${character.name} and $other $action.",
+                    groupType = "Relationships",
+                    groupLabel = "$first & $second",
+                    changeMode = "Append",
+                    evidenceType = "Player Confirmed"
+                )
+            )
+        }
+    }
+
+    private suspend fun generateDmReply(campaign: CampaignEntity, provider: AiProvider) {
+        val history = repository.recentMessages(campaign.id, 30)
+            .filter { it.content.startsWith("[DM Conversation]") }
+            .takeLast(8).map {
+            ProviderMessage(it.role, it.content)
+        }
+        val reply = provider.generate(
+            ProviderRequest(
+                systemPrompt = """
+                    You are Chronicle's friendly out-of-world DM companion.
+                    Speak directly with the player about the campaign, planning, comfort, ideas, or the app itself.
+                    Do not narrate a scene, speak as a character, advance time, or decide player actions.
+                    This channel is non-canonical. Never generate lore, state changes, proposals, character facts, quests, locations, or timeline events from it.
+                    If the player says only hello, greet them naturally and ask what they would like to discuss.
+                """.trimIndent(),
+                memoryContext = "",
+                messages = history,
+                temperature = .7,
+                nativeEnginePayload = repository.buildStructuredEnginePayload(campaign)
+            )
+        )
+        repository.addMessage(campaign.id, "assistant", "[DM Conversation]\n${reply.trim()}")
+    }
+
     private suspend fun generateStoryReply(
         campaign: CampaignEntity,
         userText: String,
-        provider: AiProvider
-    ) {
+        provider: AiProvider,
+        persist: Boolean = true,
+        resolutionDirective: String = ""
+    ): String {
         val freshCampaign = repository.campaignById(campaign.id) ?: campaign
-        val context = repository.buildCanonicalContextSnapshot(freshCampaign)
-        val history = repository.recentMessages(campaign.id, 40)
+        val history = repository.recentMessages(campaign.id, 30)
+            .filterNot { it.content.startsWith("[DM Conversation]") }
+            .takeLast(5)
             .map { ProviderMessage(it.role, it.content) }
+            .toMutableList()
+
+        // Do not feed the rejected wording back as the newest instruction. The exact outcome
+        // remains available below, while approved state comes from the fresh database snapshot.
+        if (resolutionDirective.contains("REJECTED:")) {
+            val lastUserIndex = history.indexOfLast { it.role == "user" }
+            if (lastUserIndex >= 0) {
+                history[lastUserIndex] = ProviderMessage(
+                    "user",
+                    "[Resolved turn] Chronicle Review rejected part or all of the proposed event. " +
+                        "Continue only from approved canon and the REVIEW OUTCOME; do not replay the rejected wording."
+                )
+            }
+        }
 
         val system = """
             You are Chronicle's campaign storyteller and GM.
@@ -615,17 +983,29 @@ class ChronicleViewModel(
             - Use exact canonical location and quest names where possible.
             - If a fact is absent from approved canon, do not pretend it was accepted.
 
+            REVIEW OUTCOME FOR THIS TURN
+            ${resolutionDirective.ifBlank { "No additional review outcome was supplied." }}
+            A rejected proposal means that event or fact DID NOT BECOME TRUE. Do not narrate it,
+            echo it, imply it, or preserve it as atmosphere. An edited approval must use the edited
+            canonical value, even when the player's original wording or recent draft used another value.
+
             STORY RULES
             Preserve established canon, causal continuity, character autonomy, tone, and consequences.
             Never import facts from another campaign.
             Continue naturally from the player's latest message using the now-resolved canonical state.
+            Incorporate the player's supplied action and emotional meaning before introducing new developments.
+            Never move, speak for, decide for, or complete an additional action for the player-controlled character.
+            A small player action does not authorize travel, a new encounter, a clue discovery, a time jump, or quest progress.
+            NPCs may react naturally, but stop at the next meaningful player decision point.
+            Atmospheric details are temporary narration unless they already exist in approved canon; do not present invented history as fact.
         """.trimIndent()
 
         val request = ProviderRequest(
             systemPrompt = system,
-            memoryContext = context,
+            memoryContext = "",
             messages = history,
-            temperature = 0.75
+            temperature = 0.75,
+            nativeEnginePayload = repository.buildStructuredEnginePayload(freshCampaign)
         )
 
         var reply = provider.generate(request)
@@ -649,34 +1029,62 @@ class ChronicleViewModel(
             error("Story generation was rejected before it could enter campaign history: ${validation.reason}")
         }
 
-        repository.addMessage(campaign.id, "assistant", reply)
+        if (persist) repository.addMessage(campaign.id, "assistant", reply)
+        return reply
     }
 
     private fun maybeResumePendingCanonTurn() {
-        val userText = _pendingCanonTurn.value ?: return
-        val campaign = selectedCampaign.value ?: return
-        viewModelScope.launch {
+        if (_pendingCanonTurn.value == null || resumePendingTurnJob?.isActive == true) return
+        resumePendingTurnJob = viewModelScope.launch {
             // Approval/rejection writes happen immediately, but group operations may resolve several
             // rows in sequence. Briefly let the transaction settle before deciding to resume.
             delay(120)
+            val userText = _pendingCanonTurn.value ?: return@launch
+            val campaign = selectedCampaign.value ?: return@launch
             val unresolvedNew = repository.pendingProposalIds(campaign.id).intersect(_pendingTurnProposalIds)
             if (unresolvedNew.isNotEmpty()) return@launch
 
+            val resolved = repository.proposalsSnapshot(campaign.id)
+                .filter { it.id in _pendingTurnProposalIds }
+            val resolutionDirective = buildString {
+                if (pendingTurnResolutionDirective.isNotBlank()) {
+                    appendLine(pendingTurnResolutionDirective)
+                }
+                resolved.filter { it.status == "Approved" }.forEach {
+                    appendLine("APPROVED: ${it.summary}; canonical changes=${it.proposedChanges}")
+                }
+                resolved.filter { it.status == "Rejected" || it.status == "Superseded" }.forEach {
+                    appendLine("REJECTED: ${it.summary}; forbidden proposed fact=${it.proposedChanges}")
+                }
+            }.trim()
+
             _pendingCanonTurn.value = null
+            _pendingTurnProposalIds = emptySet()
             _isGenerating.value = true
             _turnPhase.value = "APPLYING_CANON"
             try {
                 val provider: AiProvider =
                     if (_providerSettings.value.enabled) OpenAiCompatibleProvider { settingsStore.load() }
                     else ChronicleDemoProvider()
-                _turnPhase.value = "GENERATING_STORY"
-                generateStoryReply(campaign, userText, provider)
-                _turnPhase.value = "IDLE"
+                if (pendingTurnNeedsFinalRegeneration) {
+                    pendingTurnNeedsFinalRegeneration = false
+                    _turnPhase.value = "REGENERATING_FROM_CANON"
+                    generateStoryReply(
+                        campaign, userText, provider, persist = true,
+                        resolutionDirective = resolutionDirective
+                    )
+                    pendingTurnResolutionDirective = ""
+                } else {
+                    completeStoryTurn(campaign, userText, provider, resolutionDirective)
+                    if (_pendingCanonTurn.value == null) pendingTurnResolutionDirective = ""
+                }
+                if (_pendingCanonTurn.value == null) _turnPhase.value = "IDLE"
             } catch (t: Throwable) {
                 _lastError.value = t.message ?: "Could not resume the pending story turn."
             } finally {
                 _isGenerating.value = false
-                _pendingTurnProposalIds = emptySet()
+                if (_pendingCanonTurn.value == null) _pendingTurnProposalIds = emptySet()
+                resumePendingTurnJob = null
             }
         }
     }
@@ -692,6 +1100,10 @@ class ChronicleViewModel(
         }
 
         val lastUser = messages.value.lastOrNull { it.role == "user" } ?: return
+        if (lastUser.content.startsWith("[DM Conversation]")) {
+            _notice.value = "DM conversation is intentionally non-canonical, so there is nothing to scan."
+            return
+        }
         val lastAssistant = messages.value.lastOrNull {
             it.role == "assistant" && it.createdAt >= lastUser.createdAt
         } ?: return
@@ -701,6 +1113,7 @@ class ChronicleViewModel(
             // This makes Scan a genuine recovery tool instead of an AI-only retry.
             repository.proposeExplicitCharacterMovementCommand(campaign.id, lastUser.content)
             repository.proposeExplicitQuestCommand(campaign.id, lastUser.content)
+            repository.proposeExplicitCampaignYear(campaign.id, lastUser.content)
 
             val provider: AiProvider = OpenAiCompatibleProvider { settingsStore.load() }
             scanForProposals(
@@ -735,9 +1148,18 @@ class ChronicleViewModel(
                 - If a character already exists, use character_update with that exact targetId.
                 - If the user asks to create/register a NEW character sheet and no matching canonical character exists,
                   use character_new. The storyteller's chat response is NOT the character sheet.
+                - If a named character meaningfully acts or speaks in the completed exchange and no matching
+                  canonical character exists, propose character_new with only established fields. Do not wait for
+                  an explicit "create a sheet" command. Use Player Confirmed when the player introduced the name;
+                  otherwise classify the evidence honestly as Story Event or Assistant Only.
                 - Do not treat a character sheet printed by the assistant in chat as authoritative evidence by itself.
                 - Assistant-invented identity facts are Assistant Only unless the user confirms them or a resolved story event establishes them.
                 - CANON-FIRST MODE: the storyteller reply may be absent. Detect all durable changes explicitly established by the player message before narration.
+                - NEVER label storyteller-invented descriptions, history, motives, relationship labels, rewards, or clues as Player Confirmed.
+                - Leave unknown optional fields empty. Do not fill blanks creatively.
+                - Never emit character_update with targetId=null. For a player-named character missing from context, emit character_new instead.
+                - A simple interaction such as holding hands records only that interaction; it does not prove romance, alliance, loyalty, or relationship rank.
+                - A world/campaign year is durable canon: use memory_new with category Canon, title Campaign Year, and the exact player-stated year.
 
                 EVIDENCE TYPE
                 Player Confirmed = explicitly stated/confirmed by the user as canon or a desired persistent fact. If the user supplies the fact and the assistant only reformats or repeats it, it is Player Confirmed, NOT Assistant Only.
@@ -839,6 +1261,7 @@ class ChronicleViewModel(
 
                 campaign_update
                 changes={"fields":{"currentLocation":"...","currentObjective":"..."}}
+                Only these fields are supported here. Never emit year or other invented campaign fields.
 
                 cast_tier_update
                 changes={"castTier":"Main|Secondary|Supporting|Background"}
@@ -911,7 +1334,13 @@ class ChronicleViewModel(
                 )
             )
 
-            ProposalParser.parse(raw).forEach { parsed ->
+            val sanitized = ProposalSanitizer.sanitize(
+                proposals = ProposalParser.parse(raw),
+                userText = userText,
+                existingCharacterNames = repository.charactersSnapshot(campaign.id).map { it.name }.toSet()
+            )
+
+            sanitized.forEach { parsed ->
                 val targetCharacter = parsed.targetId?.let { id ->
                     characters.value.firstOrNull { it.id == id }
                 }
@@ -961,6 +1390,14 @@ class ChronicleViewModel(
     private suspend fun validateStoryReply(campaignId: Long, reply: String): StoryValidation {
         val clean = reply.trim()
         if (clean.length < 12) return StoryValidation(false, "The response was empty or too short.")
+        if (
+            clean.contains("</think>", true) ||
+            clean.contains("dm_commentary:", true) ||
+            clean.contains("\"state_proposals\"", true) ||
+            clean.startsWith("{\"narrative\"")
+        ) {
+            return StoryValidation(false, "The response leaked internal model or structured-output artifacts.")
+        }
 
         val tokens = Regex("""[A-Za-z0-9']+""").findAll(clean.lowercase()).map { it.value }.toList()
         if (tokens.size >= 30) {

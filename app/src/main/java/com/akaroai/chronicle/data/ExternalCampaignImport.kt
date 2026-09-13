@@ -22,6 +22,7 @@ data class ImportedCharacterDraft(
     val secrets: String = "",
     val injuries: String = "",
     val notes: String = "",
+    val currentLocation: String = "",
     val status: String = "Active",
     val confidence: String = "Needs review"
 )
@@ -99,10 +100,47 @@ data class ExternalImportDraft(
 )
 
 object ExternalCampaignImport {
+    fun isValidAnalysis(raw: String): Boolean = runCatching {
+        parseAnalysis(raw, "")
+    }.isSuccess
+
+    fun mergeAnalyses(rawSegments: List<String>, sourceText: String): ExternalImportDraft {
+        require(rawSegments.isNotEmpty()) { "No analyzed import segments were available." }
+        val drafts = rawSegments.map { parseAnalysis(it, "") }
+        fun latest(selector: (ExternalImportDraft) -> String): String =
+            drafts.asReversed().firstNotNullOfOrNull { selector(it).trim().takeIf(String::isNotBlank) }.orEmpty()
+        return ExternalImportDraft(
+            campaignName = drafts.firstNotNullOfOrNull {
+                it.campaignName.trim().takeIf { name -> name.isNotBlank() && name != "Imported Campaign" }
+            } ?: "Imported Campaign",
+            description = mergeText(drafts.map { it.description }),
+            setting = mergeText(drafts.map { it.setting }),
+            genreTone = mergeText(drafts.map { it.genreTone }),
+            currentLocation = latest { it.currentLocation },
+            currentObjective = latest { it.currentObjective },
+            characters = drafts.flatMap { it.characters }.groupBy { it.name.trim().lowercase() }
+                .values.map { group -> group.reduce(::mergeCharacter) },
+            memories = drafts.flatMap { it.memories }.distinctBy {
+                "${it.category.lowercase()}|${it.title.lowercase()}|${it.content.lowercase()}"
+            },
+            locations = drafts.flatMap { it.locations }.groupBy { it.name.trim().lowercase() }
+                .values.map { group -> group.reduce(::mergeLocation) },
+            factions = drafts.flatMap { it.factions }.groupBy { it.name.trim().lowercase() }
+                .values.map { group -> group.reduce(::mergeFaction) },
+            quests = drafts.flatMap { it.quests }.groupBy { it.title.trim().lowercase() }
+                .values.map { group -> group.reduce(::mergeQuest) },
+            timelineEvents = drafts.flatMap { it.timelineEvents }.distinctBy {
+                "${it.title.lowercase()}|${it.summary.lowercase()}"
+            },
+            messages = parseTranscript(sourceText),
+            sourceText = sourceText
+        )
+    }
+
     fun parseAnalysis(raw: String, sourceText: String): ExternalImportDraft {
-        val clean = raw.trim()
+        val clean = extractJsonObject(raw.trim()
             .removePrefix("```json").removePrefix("```")
-            .removeSuffix("```").trim()
+            .removeSuffix("```").trim())
         val o = JSONObject(clean)
         return ExternalImportDraft(
             campaignName = o.optString("campaignName", "Imported Campaign").ifBlank { "Imported Campaign" },
@@ -139,7 +177,8 @@ object ExternalCampaignImport {
                     relationship=o.optString("relationship"), affiliations=o.optString("affiliations"),
                     goals=o.optString("goals"), fears=o.optString("fears"),
                     secrets=o.optString("secrets"), injuries=o.optString("injuries"),
-                    notes=o.optString("notes"), status=o.optString("status","Active"),
+                    notes=o.optString("notes"), currentLocation=o.optString("currentLocation"),
+                    status=o.optString("status","Active"),
                     confidence=normalizeConfidence(o.optString("confidence"))
                 ))
             }
@@ -259,6 +298,82 @@ object ExternalCampaignImport {
         "ambiguous" -> "Ambiguous"
         else -> "Needs review"
     }
+
+    private fun extractJsonObject(raw: String): String {
+        if (raw.startsWith("{") && raw.endsWith("}")) return raw
+        val start = raw.indexOf('{')
+        require(start >= 0) { "The AI returned text instead of campaign data. Chronicle will retry this segment." }
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until raw.length) {
+            val char = raw[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+            } else {
+                when (char) {
+                    '"' -> inString = true
+                    '{' -> depth++
+                    '}' -> {
+                        depth--
+                        if (depth == 0) return raw.substring(start, index + 1)
+                    }
+                }
+            }
+        }
+        error("The AI returned incomplete campaign data. Chronicle will retry this segment.")
+    }
+
+    private fun prefer(old: String, new: String): String = new.trim().ifBlank { old.trim() }
+    private fun mergeText(values: List<String>): String = values.map(String::trim)
+        .filter(String::isNotBlank).distinct().joinToString("\n")
+    private fun confidence(a: String, b: String): String = when {
+        a == "Ambiguous" || b == "Ambiguous" -> "Ambiguous"
+        a == "Needs review" || b == "Needs review" -> "Needs review"
+        else -> "High confidence"
+    }
+
+    private fun mergeCharacter(a: ImportedCharacterDraft, b: ImportedCharacterDraft) = a.copy(
+        castTier = prefer(a.castTier, b.castTier), species = prefer(a.species, b.species),
+        age = prefer(a.age, b.age), pronouns = prefer(a.pronouns, b.pronouns),
+        appearance = mergeText(listOf(a.appearance, b.appearance)),
+        personality = mergeText(listOf(a.personality, b.personality)),
+        backstory = mergeText(listOf(a.backstory, b.backstory)),
+        abilities = mergeText(listOf(a.abilities, b.abilities)),
+        equipment = mergeText(listOf(a.equipment, b.equipment)),
+        relationship = mergeText(listOf(a.relationship, b.relationship)),
+        affiliations = mergeText(listOf(a.affiliations, b.affiliations)),
+        goals = mergeText(listOf(a.goals, b.goals)), fears = mergeText(listOf(a.fears, b.fears)),
+        secrets = mergeText(listOf(a.secrets, b.secrets)), injuries = prefer(a.injuries, b.injuries),
+        notes = mergeText(listOf(a.notes, b.notes)), currentLocation = prefer(a.currentLocation, b.currentLocation),
+        status = prefer(a.status, b.status),
+        confidence = confidence(a.confidence, b.confidence)
+    )
+
+    private fun mergeLocation(a: ImportedLocationDraft, b: ImportedLocationDraft) = a.copy(
+        region = prefer(a.region, b.region), parentLocation = prefer(a.parentLocation, b.parentLocation),
+        description = mergeText(listOf(a.description, b.description)),
+        discoveryState = prefer(a.discoveryState, b.discoveryState), status = prefer(a.status, b.status),
+        notes = mergeText(listOf(a.notes, b.notes)), confidence = confidence(a.confidence, b.confidence)
+    )
+
+    private fun mergeFaction(a: ImportedFactionDraft, b: ImportedFactionDraft) = a.copy(
+        description = mergeText(listOf(a.description, b.description)), alignment = prefer(a.alignment, b.alignment),
+        relationshipToParty = prefer(a.relationshipToParty, b.relationshipToParty), status = prefer(a.status, b.status),
+        goals = mergeText(listOf(a.goals, b.goals)), notes = mergeText(listOf(a.notes, b.notes)),
+        confidence = confidence(a.confidence, b.confidence)
+    )
+
+    private fun mergeQuest(a: ImportedQuestDraft, b: ImportedQuestDraft) = a.copy(
+        summary = mergeText(listOf(a.summary, b.summary)), status = prefer(a.status, b.status),
+        objective = prefer(a.objective, b.objective), relatedLocation = prefer(a.relatedLocation, b.relatedLocation),
+        relatedFaction = prefer(a.relatedFaction, b.relatedFaction), importance = prefer(a.importance, b.importance),
+        notes = mergeText(listOf(a.notes, b.notes)), confidence = confidence(a.confidence, b.confidence)
+    )
 
     // Deterministic transcript preservation when common speaker prefixes exist.
     fun parseTranscript(text: String): List<ImportedMessageDraft> {

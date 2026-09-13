@@ -39,6 +39,24 @@ data class MessageEntity(
 )
 
 @Entity(
+    tableName = "import_source_chunks",
+    foreignKeys = [ForeignKey(
+        entity = CampaignEntity::class,
+        parentColumns = ["id"],
+        childColumns = ["campaignId"],
+        onDelete = ForeignKey.CASCADE
+    )],
+    indices = [Index("campaignId"), Index(value = ["campaignId", "ordinal"], unique = true)]
+)
+data class ImportSourceChunkEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val campaignId: Long,
+    val ordinal: Int,
+    val content: String,
+    val sourceSha256: String
+)
+
+@Entity(
     tableName = "memories",
     foreignKeys = [ForeignKey(
         entity = CampaignEntity::class,

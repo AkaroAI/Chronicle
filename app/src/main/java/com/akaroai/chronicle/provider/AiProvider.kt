@@ -20,7 +20,9 @@ data class ProviderRequest(
     val systemPrompt: String,
     val memoryContext: String,
     val messages: List<ProviderMessage>,
-    val temperature: Double = 0.7
+    val temperature: Double = 0.7,
+    val nativeEnginePayload: JSONObject? = null,
+    val timeoutSeconds: Long = 120
 )
 
 interface AiProvider {
@@ -61,27 +63,11 @@ class OpenAiCompatibleProvider(
         require(settings.baseUrl.isNotBlank()) { "Provider base URL is missing." }
         require(settings.model.isNotBlank()) { "Model name is missing." }
 
-        val endpoint = validateProviderTransport(settings) + "/chat/completions"
+        val validatedBase = validateProviderTransport(settings)
+        val nativePayload = request.nativeEnginePayload
+        val endpoint = providerEndpoint(validatedBase, nativePayload != null)
 
-        val messages = JSONArray()
-        val system = buildString {
-            append(request.systemPrompt.trim())
-            if (request.memoryContext.isNotBlank()) {
-                append("\n\nCAMPAIGN MEMORY — ONLY THIS CAMPAIGN:\n")
-                append(request.memoryContext.trim())
-            }
-        }
-
-        messages.put(JSONObject().put("role", "system").put("content", system))
-        request.messages.forEach {
-            messages.put(JSONObject().put("role", it.role).put("content", it.content))
-        }
-
-        val payload = JSONObject()
-            .put("model", settings.model)
-            .put("messages", messages)
-            .put("temperature", request.temperature.coerceIn(0.0, 1.5))
-            .put("stream", false)
+        val payload = buildProviderPayload(request, settings.model)
 
         val httpRequest = Request.Builder()
             .url(endpoint)
@@ -94,13 +80,21 @@ class OpenAiCompatibleProvider(
             }
             .build()
 
-        client.newCall(httpRequest).execute().use { response ->
+        client.newBuilder()
+            .readTimeout(request.timeoutSeconds.coerceIn(30, 900), TimeUnit.SECONDS)
+            .build()
+            .newCall(httpRequest).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw IllegalStateException("Provider error ${response.code}: $body")
             }
 
             val json = JSONObject(body)
+            if (nativePayload != null) {
+                return@withContext json.optString("response")
+                    .ifBlank { throw IllegalStateException("Chronicle Engine returned no narrative.") }
+            }
+
             val choices = json.optJSONArray("choices")
                 ?: throw IllegalStateException("Provider returned no choices.")
 
@@ -113,6 +107,40 @@ class OpenAiCompatibleProvider(
                 .optString("content")
                 .ifBlank { "The provider returned an empty message." }
         }
+    }
+}
+
+internal fun buildProviderPayload(request: ProviderRequest, model: String): JSONObject {
+    val messages = JSONArray()
+    val system = buildString {
+        append(request.systemPrompt.trim())
+        if (request.memoryContext.isNotBlank()) {
+            append("\n\nCAMPAIGN MEMORY — ONLY THIS CAMPAIGN:\n")
+            append(request.memoryContext.trim())
+        }
+    }
+    messages.put(JSONObject().put("role", "system").put("content", system))
+    request.messages.forEach {
+        messages.put(JSONObject().put("role", it.role).put("content", it.content))
+    }
+    return request.nativeEnginePayload?.let {
+        JSONObject(it.toString())
+            .put("messages", messages)
+            .put("system_prompt", system)
+            .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+    } ?: JSONObject()
+        .put("model", model)
+        .put("messages", messages)
+        .put("temperature", request.temperature.coerceIn(0.0, 1.5))
+        .put("stream", false)
+}
+
+internal fun providerEndpoint(validatedBase: String, nativeEngineRequest: Boolean): String {
+    val root = validatedBase.trimEnd('/').removeSuffix("/v1")
+    return if (nativeEngineRequest) {
+        "$root/api/v1/generate"
+    } else {
+        "$root/v1/chat/completions"
     }
 }
 

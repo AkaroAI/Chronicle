@@ -20,12 +20,13 @@ data class ChronicleBackupData(
     val locations: List<LocationEntity> = emptyList(),
     val factions: List<FactionEntity> = emptyList(),
     val quests: List<QuestEntity> = emptyList(),
-    val timelineEvents: List<TimelineEventEntity> = emptyList()
+    val timelineEvents: List<TimelineEventEntity> = emptyList(),
+    val importSourceChunks: List<ImportSourceChunkEntity> = emptyList()
 )
 
 object ChronicleBackup {
     const val FORMAT_NAME = "chronicle"
-    const val FORMAT_VERSION = 4
+    const val FORMAT_VERSION = 5
 
     fun write(data: ChronicleBackupData, output: OutputStream) {
         ZipOutputStream(output.buffered()).use { zip ->
@@ -45,6 +46,7 @@ object ChronicleBackup {
                     .put("factions", data.factions.size)
                     .put("quests", data.quests.size)
                     .put("timelineEvents", data.timelineEvents.size)
+                    .put("importSourceChunks", data.importSourceChunks.size)
             )
             zip.putJson("campaign.json", campaignToJson(data.campaign))
             zip.putJson("characters.json", JSONArray().apply { data.characters.forEach { put(characterToJson(it)) } })
@@ -55,6 +57,7 @@ object ChronicleBackup {
             zip.putJson("factions.json", JSONArray().apply { data.factions.forEach { put(factionToJson(it)) } })
             zip.putJson("quests.json", JSONArray().apply { data.quests.forEach { put(questToJson(it)) } })
             zip.putJson("timeline.json", JSONArray().apply { data.timelineEvents.forEach { put(timelineToJson(it)) } })
+            zip.putJson("import-source.json", JSONArray().apply { data.importSourceChunks.forEach { put(sourceChunkToJson(it)) } })
         }
     }
 
@@ -93,7 +96,8 @@ object ChronicleBackup {
             locations = parseArray(entries["locations.json"]) { locationFromJson(it) },
             factions = parseArray(entries["factions.json"]) { factionFromJson(it) },
             quests = parseArray(entries["quests.json"]) { questFromJson(it) },
-            timelineEvents = parseArray(entries["timeline.json"]) { timelineFromJson(it) }
+            timelineEvents = parseArray(entries["timeline.json"]) { timelineFromJson(it) },
+            importSourceChunks = parseArray(entries["import-source.json"]) { sourceChunkFromJson(it) }
         )
     }
 
@@ -257,6 +261,16 @@ object ChronicleBackup {
         location=o.optString("location"),involvedCharacters=o.optString("involvedCharacters"),storyArc=o.optString("storyArc"),
         importance=o.optString("importance","Normal"),source=o.optString("source","Review"),storyOrder=o.optLong("storyOrder"),
         createdAt=o.optLong("createdAt",System.currentTimeMillis())
+    )
+
+    private fun sourceChunkToJson(x: ImportSourceChunkEntity) = JSONObject()
+        .put("ordinal", x.ordinal).put("content", x.content).put("sourceSha256", x.sourceSha256)
+
+    private fun sourceChunkFromJson(o: JSONObject) = ImportSourceChunkEntity(
+        campaignId = 0,
+        ordinal = o.optInt("ordinal"),
+        content = o.optString("content"),
+        sourceSha256 = o.optString("sourceSha256")
     )
 
     private fun nullableLong(o: JSONObject, key: String): Long? =
